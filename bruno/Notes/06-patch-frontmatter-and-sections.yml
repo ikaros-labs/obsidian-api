@@ -1,0 +1,79 @@
+info:
+  name: 'Patch: frontmatter and sections'
+  type: http
+  seq: 6
+http:
+  method: PATCH
+  url: '{{baseUrl}}/v1/notes/{{createdNote}}?return=full'
+  params:
+  - name: return
+    value: full
+    type: query
+  body:
+    type: json
+    data: |-
+      {
+        "if_match": "{{createdRev}}",
+        "ops": [
+          {
+            "op": "frontmatter.set",
+            "key": "status",
+            "value": "reading"
+          },
+          {
+            "op": "frontmatter.merge",
+            "value": {
+              "tags": [
+                "bruno"
+              ]
+            }
+          },
+          {
+            "op": "append",
+            "target": {
+              "heading": [
+                "Bruno test",
+                "Notes"
+              ]
+            },
+            "content": "- added by PATCH"
+          },
+          {
+            "op": "replace_text",
+            "old": "First line.",
+            "new": "First line (edited)."
+          }
+        ]
+      }
+  auth: inherit
+runtime:
+  scripts:
+  - type: after-response
+    code: |-
+      const body = res.getBody();
+      if (body && body.path) {
+        bru.setVar("createdNote", body.path);
+        bru.setVar("createdRev", body.rev);
+      }
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+      test("frontmatter updated", function () {
+        expect(res.getBody().frontmatter.status).to.equal("reading");
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Applies the operations in order, atomically: if any one fails, nothing is written.
+
+  The supported ops:
+  - `frontmatter.set`, `frontmatter.unset`, `frontmatter.merge`
+  - `append`, `prepend` and `replace`. Each targets a `heading` path, a `block` id, or the whole body when `target` is left out.
+  - `replace_text`: exact string replace
+
+  `if_match` stops the write with 412 if the note changed since `{{createdRev}}`.

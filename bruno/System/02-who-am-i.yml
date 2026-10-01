@@ -1,0 +1,29 @@
+info:
+  name: Who am I
+  type: http
+  seq: 2
+  tags:
+  - smoke
+http:
+  method: GET
+  url: '{{baseUrl}}/v1/me'
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+      test("has an account", function () {
+        expect(res.getBody().account).to.be.a("string");
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Shows the account behind `{{token}}`: name, root, access grants, rate limit, and the token's name and expiry.
+
+  Call this first to see what the token can do.

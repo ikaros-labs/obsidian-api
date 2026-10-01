@@ -1,0 +1,8 @@
+info:
+  name: Notes
+  type: folder
+  seq: 3
+request:
+  auth: inherit
+docs: |-
+  Read and write notes. Run the folder in order: it creates a note in `{{scratchFolder}}`, edits it, moves it and deletes it.

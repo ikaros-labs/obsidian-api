@@ -1,0 +1,14 @@
+name: local
+variables:
+- name: baseUrl
+  value: http://127.0.0.1:8787
+- secret: true
+  name: token
+- name: note
+  value: ''
+- name: folder
+  value: ''
+- name: scratchFolder
+  value: Bruno
+- name: cursor
+  value: ''

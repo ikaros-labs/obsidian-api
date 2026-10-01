@@ -1,0 +1,29 @@
+info:
+  name: Count notes
+  type: http
+  seq: 6
+http:
+  method: GET
+  url: '{{baseUrl}}/v1/count/{{folder}}?depth=all&kind=note'
+  params:
+  - name: depth
+    value: all
+    type: query
+  - name: kind
+    value: note
+    type: query
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  With `kind` set, only that count is returned: `{ path, depth, notes }`.

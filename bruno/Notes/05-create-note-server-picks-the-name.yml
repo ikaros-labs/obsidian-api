@@ -1,0 +1,50 @@
+info:
+  name: Create note (server picks the name)
+  type: http
+  seq: 5
+http:
+  method: POST
+  url: '{{baseUrl}}/v1/notes'
+  body:
+    type: json
+    data: |-
+      {
+        "folder": "{{scratchFolder}}",
+        "title": "Bruno test: hello/world",
+        "frontmatter": {
+          "status": "to-read",
+          "url": "https://example.com/article"
+        },
+        "body": "# Bruno test\n\n## Notes\n\nFirst line.\n",
+        "on_conflict": "rename"
+      }
+  auth: inherit
+runtime:
+  scripts:
+  - type: after-response
+    code: |-
+      const body = res.getBody();
+      if (body && body.path) {
+        bru.setVar("createdNote", body.path);
+        bru.setVar("createdRev", body.rev);
+      }
+  - type: tests
+    code: |-
+      test("status is 201", function () {
+        expect(res.getStatus()).to.equal(201);
+      });
+      test("returns path and rev", function () {
+        expect(res.getBody().path).to.be.a("string");
+        expect(res.getBody().rev).to.match(/^sha256:/);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Creates a note in `folder`, with a filename made from `title`. `on_conflict: rename` (the default) adds ` 1`, ` 2`, … when the name is taken; `fail` returns 409 instead.
+
+  This is the reading-list bot's "save article".
+
+  It saves the new note's path and rev as `{{createdNote}}` and `{{createdRev}}` for the next requests.

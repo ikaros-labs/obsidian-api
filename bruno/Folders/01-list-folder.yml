@@ -1,0 +1,46 @@
+info:
+  name: List folder
+  type: http
+  seq: 1
+  tags:
+  - smoke
+http:
+  method: GET
+  url: '{{baseUrl}}/v1/folders/{{folder}}?depth=1&kind=all&sort=name&limit=50'
+  params:
+  - name: depth
+    value: '1'
+    type: query
+  - name: kind
+    value: all
+    type: query
+  - name: sort
+    value: name
+    type: query
+  - name: limit
+    value: '50'
+    type: query
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Lists one level of `{{folder}}` (empty = account root).
+
+  Query parameters:
+  - `depth`: `1` or `all`
+  - `kind`: `note`, `file`, `folder` or `all`
+  - `sort`: `name`, `created`, `modified`; prefix `-` for descending
+  - `limit` (max 500) and `cursor` for paging
+  - `fields`: e.g. `path,modified`
+
+  `total` counts the whole filtered set, not just this page. Folders shown only as a way to a grant have `traverse_only: true`.

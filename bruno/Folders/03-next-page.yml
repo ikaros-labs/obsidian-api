@@ -1,0 +1,47 @@
+info:
+  name: Next page
+  type: http
+  seq: 3
+http:
+  method: GET
+  url: '{{baseUrl}}/v1/folders/{{folder}}?depth=all&kind=note&sort=-modified&limit=2&fields=path,modified&cursor={{cursor}}'
+  params:
+  - name: depth
+    value: all
+    type: query
+  - name: kind
+    value: note
+    type: query
+  - name: sort
+    value: -modified
+    type: query
+  - name: limit
+    value: '2'
+    type: query
+  - name: fields
+    value: path,modified
+    type: query
+  - name: cursor
+    value: '{{cursor}}'
+    type: query
+  auth: inherit
+runtime:
+  scripts:
+  - type: after-response
+    code: |-
+      const body = res.getBody();
+      bru.setVar("cursor", body.next_cursor || "");
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Fetches the page after the previous request in this folder, using the `next_cursor` it saved in `{{cursor}}`.
+
+  A cursor only works with the same path and the same parameters, so these match the request above with `limit=2`. The first run of this request sets up the cursor, and each run after that fetches the next page.

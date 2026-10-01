@@ -1,0 +1,24 @@
+info:
+  name: Delete note (to trash)
+  type: http
+  seq: 10
+http:
+  method: DELETE
+  url: '{{baseUrl}}/v1/notes/{{createdNote}}'
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 204", function () {
+        expect(res.getStatus()).to.equal(204);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Moves the note to the vault's trash (`.trash/` by default).
+
+  `permanent=true` deletes it for good and needs `purge`.

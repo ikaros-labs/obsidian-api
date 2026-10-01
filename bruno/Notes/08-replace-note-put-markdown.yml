@@ -1,0 +1,45 @@
+info:
+  name: Replace note (PUT markdown)
+  type: http
+  seq: 8
+http:
+  method: PUT
+  url: '{{baseUrl}}/v1/notes/{{createdNote}}'
+  headers:
+  - name: Content-Type
+    value: text/markdown
+  - name: If-Match
+    value: '{{createdRev}}'
+  body:
+    type: text
+    data: |
+      ---
+      status: read
+      ---
+      # Bruno test
+
+      Replaced via PUT.
+  auth: inherit
+runtime:
+  scripts:
+  - type: after-response
+    code: |-
+      const body = res.getBody();
+      if (body && body.path) {
+        bru.setVar("createdNote", body.path);
+        bru.setVar("createdRev", body.rev);
+      }
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Replaces the whole file with the raw markdown body. `If-Match` makes the replace conditional.
+
+  To create a note at an exact path instead, use `If-None-Match: *`, which fails with 409 if the path exists. A JSON body `{ frontmatter, body }` also works.

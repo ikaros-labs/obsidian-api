@@ -1,0 +1,30 @@
+info:
+  name: Count everything
+  type: http
+  seq: 5
+  tags:
+  - smoke
+http:
+  method: GET
+  url: '{{baseUrl}}/v1/count/{{folder}}?depth=all'
+  params:
+  - name: depth
+    value: all
+    type: query
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Counts notes, files and folders under `{{folder}}` that this account can see. `depth=all` counts recursively.
+
+  Expected: `{ path, depth, notes, files, folders }`.

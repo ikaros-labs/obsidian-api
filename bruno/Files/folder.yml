@@ -1,0 +1,8 @@
+info:
+  name: Files
+  type: folder
+  seq: 4
+request:
+  auth: inherit
+docs: |-
+  Raw bytes for attachments and any other file. Run in order.

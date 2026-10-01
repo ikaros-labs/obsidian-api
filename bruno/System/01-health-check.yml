@@ -1,0 +1,27 @@
+info:
+  name: Health check
+  type: http
+  seq: 1
+  tags:
+  - smoke
+http:
+  method: GET
+  url: '{{baseUrl}}/healthz'
+  auth:
+    type: none
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Liveness probe. Needs no auth.
+
+  Expected: 200 `{ "ok": true }`.

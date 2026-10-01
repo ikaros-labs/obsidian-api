@@ -1,0 +1,22 @@
+info:
+  name: Delete file
+  type: http
+  seq: 5
+http:
+  method: DELETE
+  url: '{{baseUrl}}/v1/files/{{scratchFolder}}/hello-moved.txt'
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 204", function () {
+        expect(res.getStatus()).to.equal(204);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Moves the file to the trash. `permanent=true` (needs `purge`) deletes it for good.

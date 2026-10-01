@@ -1,0 +1,22 @@
+info:
+  name: Get file
+  type: http
+  seq: 2
+http:
+  method: GET
+  url: '{{baseUrl}}/v1/files/{{scratchFolder}}/hello.txt'
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Returns raw bytes with a `Content-Type` based on the file extension. Supports `ETag` / `If-None-Match` and `Range`.

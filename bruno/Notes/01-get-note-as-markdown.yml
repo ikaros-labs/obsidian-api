@@ -1,0 +1,29 @@
+info:
+  name: Get note as markdown
+  type: http
+  seq: 1
+  tags:
+  - smoke
+http:
+  method: GET
+  url: '{{baseUrl}}/v1/notes/{{note}}'
+  headers:
+  - name: Accept
+    value: text/markdown
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Returns the raw file. The `.md` extension is optional.
+
+  The `ETag` header is the note's `rev`. Send it back as `If-None-Match` to get a 304 when nothing changed, which is useful for the e-ink display's polling.

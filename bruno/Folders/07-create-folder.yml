@@ -1,0 +1,24 @@
+info:
+  name: Create folder
+  type: http
+  seq: 7
+http:
+  method: POST
+  url: '{{baseUrl}}/v1/folders/{{scratchFolder}}'
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is one of [201, 409]", function () {
+        expect([201, 409]).to.include(res.getStatus());
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Creates `{{scratchFolder}}`, including any missing parent folders. Needs `create`.
+
+  Expected: 201, or 409 if the folder already exists.

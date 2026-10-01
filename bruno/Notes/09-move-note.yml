@@ -1,0 +1,38 @@
+info:
+  name: Move note
+  type: http
+  seq: 9
+http:
+  method: POST
+  url: '{{baseUrl}}/v1/notes/{{createdNote}}/move'
+  body:
+    type: json
+    data: |-
+      {
+        "destination": "{{scratchFolder}}/Moved/Bruno test",
+        "on_conflict": "rename"
+      }
+  auth: inherit
+runtime:
+  scripts:
+  - type: after-response
+    code: |-
+      const body = res.getBody();
+      if (body && body.path) {
+        bru.setVar("createdNote", body.path);
+        bru.setVar("createdRev", body.rev);
+      }
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Moves the note. It needs `update` and `delete` on the source and `create` on the destination. The file keeps its inode, and so its created time. Links pointing to it are not rewritten.
+
+  `on_conflict: fail` (the default) returns 409 if the destination exists; `rename` picks a free name.

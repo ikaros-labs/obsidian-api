@@ -1,0 +1,8 @@
+info:
+  name: Folders
+  type: folder
+  seq: 2
+request:
+  auth: inherit
+docs: |-
+  Listing, counting, sampling and folder writes. `{{folder}}` is relative to the account root; empty = root.

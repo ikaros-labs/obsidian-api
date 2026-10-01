@@ -1,0 +1,37 @@
+info:
+  name: Patch with stale rev (expect 412)
+  type: http
+  seq: 7
+http:
+  method: PATCH
+  url: '{{baseUrl}}/v1/notes/{{createdNote}}'
+  body:
+    type: json
+    data: |-
+      {
+        "if_match": "sha256:0000000000000000",
+        "ops": [
+          {
+            "op": "append",
+            "content": "never written"
+          }
+        ]
+      }
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 412", function () {
+        expect(res.getStatus()).to.equal(412);
+      });
+      test("error code", function () {
+        expect(res.getBody().error.code).to.equal("rev_mismatch");
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Shows the concurrency check: a made-up `if_match` returns 412 `rev_mismatch`, and `details.current_rev` holds the real rev.

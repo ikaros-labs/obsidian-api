@@ -45,6 +45,18 @@ docker compose up -d
 
 Inside the container the config must use `server.host: 0.0.0.0`. To control who can reach the server, use the port mapping instead, e.g. bind it to your tailnet IP only.
 
+## Try it with Bruno
+
+[`bruno/`](bruno) is a [Bruno](https://www.usebruno.com) collection (OpenCollection YAML) that covers every endpoint. Open the folder in Bruno and pick the **local** environment. Set `token` (secret) and `note`, an existing note path such as `Inbox`, and `baseUrl` if the server isn't on `127.0.0.1:8787`.
+
+To run everything from the terminal:
+
+```sh
+cd bruno && npx @usebruno/cli run --env local --env-var token=vlt_… --env-var note=Inbox
+```
+
+The Notes, Files and Folders requests create files in `{{scratchFolder}}` (default `Bruno/`) and move them to the trash afterwards. The token needs `full` access to that folder, because the cleanup deletes files.
+
 ## Develop
 
 ```sh

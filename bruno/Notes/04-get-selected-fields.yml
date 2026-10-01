@@ -1,0 +1,29 @@
+info:
+  name: Get selected fields
+  type: http
+  seq: 4
+http:
+  method: GET
+  url: '{{baseUrl}}/v1/notes/{{note}}?fields=path,rev,frontmatter.status,tags'
+  params:
+  - name: fields
+    value: path,rev,frontmatter.status,tags
+    type: query
+  headers:
+  - name: Accept
+    value: application/json
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  `fields=` keeps only the listed fields. Dotted paths reach into frontmatter.

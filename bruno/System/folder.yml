@@ -1,0 +1,8 @@
+info:
+  name: System
+  type: folder
+  seq: 1
+request:
+  auth: inherit
+docs: |-
+  Health check and token introspection.

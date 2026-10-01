@@ -1,0 +1,29 @@
+info:
+  name: Upload file
+  type: http
+  seq: 1
+http:
+  method: PUT
+  url: '{{baseUrl}}/v1/files/{{scratchFolder}}/hello.txt'
+  headers:
+  - name: Content-Type
+    value: text/plain
+  body:
+    type: text
+    data: |
+      hello from bruno
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is one of [200, 201]", function () {
+        expect([200, 201]).to.include(res.getStatus());
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Uploads the raw request body. Any content type is accepted and stored unchanged. Supports `If-Match` and `If-None-Match`.

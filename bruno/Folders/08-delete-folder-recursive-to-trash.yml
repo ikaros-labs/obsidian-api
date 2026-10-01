@@ -1,0 +1,28 @@
+info:
+  name: Delete folder (recursive, to trash)
+  type: http
+  seq: 8
+http:
+  method: DELETE
+  url: '{{baseUrl}}/v1/folders/{{scratchFolder}}?recursive=true'
+  params:
+  - name: recursive
+    value: 'true'
+    type: query
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is one of [204, 404]", function () {
+        expect([204, 404]).to.include(res.getStatus());
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Moves `{{scratchFolder}}` and everything inside it to the trash. Needs `delete` on everything inside.
+
+  Without `recursive=true` this only works on an empty folder (409 `folder_not_empty` otherwise). It refuses if the folder holds files the account can't see. Add `permanent=true` (needs `purge`) to skip the trash.

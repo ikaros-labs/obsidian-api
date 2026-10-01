@@ -1,0 +1,32 @@
+info:
+  name: Move file
+  type: http
+  seq: 4
+http:
+  method: POST
+  url: '{{baseUrl}}/v1/files/{{scratchFolder}}/hello.txt/move'
+  headers:
+  - name: Content-Type
+    value: application/json
+  body:
+    type: json
+    data: |-
+      {
+        "destination": "{{scratchFolder}}/hello-moved.txt",
+        "on_conflict": "rename"
+      }
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Same rules as moving a note. The body must be JSON.

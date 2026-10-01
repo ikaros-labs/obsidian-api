@@ -1,0 +1,32 @@
+info:
+  name: Get note as JSON
+  type: http
+  seq: 2
+http:
+  method: GET
+  url: '{{baseUrl}}/v1/notes/{{note}}?include=backlinks'
+  params:
+  - name: include
+    value: backlinks
+    type: query
+  headers:
+  - name: Accept
+    value: application/json
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Returns the note as JSON: `path, name, rev, created, modified, size, frontmatter, body, tags, links`.
+
+  - `include=backlinks` adds the readable notes that link here.
+  - Links to notes the account can't read come back as `resolved: false`.

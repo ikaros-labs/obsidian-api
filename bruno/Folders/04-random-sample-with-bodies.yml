@@ -1,0 +1,40 @@
+info:
+  name: Random sample with bodies
+  type: http
+  seq: 4
+http:
+  method: GET
+  url: '{{baseUrl}}/v1/folders/{{folder}}?depth=all&kind=note&sample=3&include=body,frontmatter'
+  params:
+  - name: depth
+    value: all
+    type: query
+  - name: kind
+    value: note
+    type: query
+  - name: sample
+    value: '3'
+    type: query
+  - name: include
+    value: body,frontmatter
+    type: query
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+      test("at most 3 results", function () {
+        expect(res.getBody().results.length).to.be.at.most(3);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Picks `sample` random notes, including frontmatter and body. This covers the reading-list bot's daily pick in one call.
+
+  Add `seed=…` to get the same pick again.

@@ -1,0 +1,40 @@
+info:
+  name: List all notes by last modified
+  type: http
+  seq: 2
+http:
+  method: GET
+  url: '{{baseUrl}}/v1/folders/{{folder}}?depth=all&kind=note&sort=-modified&limit=20&fields=path,modified'
+  params:
+  - name: depth
+    value: all
+    type: query
+  - name: kind
+    value: note
+    type: query
+  - name: sort
+    value: -modified
+    type: query
+  - name: limit
+    value: '20'
+    type: query
+  - name: fields
+    value: path,modified
+    type: query
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Every note under `{{folder}}`, newest change first, showing only path and modification time.
+
+  Uses `depth=all&kind=note&sort=-modified&fields=path,modified`.
