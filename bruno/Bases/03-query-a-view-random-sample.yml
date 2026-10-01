@@ -1,0 +1,36 @@
+info:
+  name: 'Query a view: random sample'
+  type: http
+  seq: 3
+http:
+  method: POST
+  url: '{{baseUrl}}/v1/bases/{{base}}/query'
+  body:
+    type: json
+    data: |-
+      {
+        "view": "{{view}}",
+        "sample": 3,
+        "include": [
+          "frontmatter"
+        ]
+      }
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Picks 3 random rows from `{{view}}`, including frontmatter. This is the reading-list bot's daily pick, filtered on the server.
+
+  - `seed` repeats the same pick.
+  - Add `"include": ["body"]` to get the note text.
+  - An unknown view name returns 400 with `details.available_views`.

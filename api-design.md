@@ -18,7 +18,7 @@ A self-hosted REST server over a folder of markdown files (an Obsidian vault or 
 | Moving notes | Never rewrites links |
 | Access model | Grants on the folder tree: the most specific path wins. No globs |
 | Account management | A YAML config file plus a token CLI. No admin API |
-| v1 leaves out | Search, Bases, query (query shares the Bases expression engine), stats |
+| v1 leaves out | Search and stats. Bases and query were added later (see *Bases*) |
 
 ## Principles
 
@@ -326,6 +326,8 @@ vault-api token revoke <account> <name>
 | Endpoint | Needs |
 |---|---|
 | `GET` note, file, folder listing or count; tags | `read` (listings show parent folders on the way to a grant) |
+| `GET` base, base query | `read` on the `.base` file; rows only from readable notes |
+| `POST /v1/query` | `read` on (or a way to) each `from` folder; rows only from readable notes |
 | `PUT` to a new path, `POST /notes`, `POST /folders/{path}` | `create` |
 | `PUT` over an existing file, `PATCH` | `update` |
 | `DELETE` | `delete`; with `permanent=true`, `purge` |
@@ -347,6 +349,130 @@ Once query exists, the reading-list bot can filter by `status == "to-read"` on t
 
 ---
 
+## Bases
+
+Status: implemented. The example throughout is `Reading List.base`.
+
+### Engine
+- **Expressions** (filters and formulas) are evaluated by [`obsidian-bases-expression`](https://github.com/callumalpass/obsidian-bases-expression). Its results are checked against a running Obsidian app, and it publishes a list of known divergences.
+- **Everything else in a view is done by the server:** combining the base's and the view's filters, `sort`, `groupBy`, `limit`, choosing columns, and paging.
+- **Property types** come from `.obsidian/types.json` when the vault has one; Obsidian keeps them there. The server reads this file only internally; it is never served. Without the type, `Completed > date("2026-08-01")` fails, because the library treats `"2026-09-01"` as a plain string.
+  - Fallback when a property has no type: a value that looks like an ISO date or datetime is treated as a date.
+  - `vault.property_types` in the config can override types.
+- **Evaluation runs over the in-memory index.** Frontmatter, tags, links and stat data are already there, so a query never reads note files unless the client asks for `include=body`.
+- **Rows are all files, not only notes**, as in Obsidian: an image in the folder matches `file.folder == "…"` too. Add `file.ext == "md"` to a filter to keep only notes.
+- **Per-file inputs and the vault-wide lookup tables are cached between queries**, separately for each account. The cache is rebuilt when the index changes, when the property types change, or when the config is reloaded. On a vault of about 5,000 notes, a query takes 100–300 ms.
+- **Known library quirk:** `file("path")` for a path the account can't see (or that doesn't exist) returns the *current* row's properties instead of empty. The hidden note's data doesn't leak, but the value is wrong.
+- **Errors are tolerated.** An expression that errors on a row counts as `false` in a filter and `null` in a column, as in Obsidian. The response lists them under `diagnostics`.
+
+### Scoping
+- **The base file:** querying a base requires `read` on the `.base` file. Anything else returns 404.
+- **Rows** are limited to notes the account can read. A row is skipped before the filter runs, so hidden notes can't show up in counts, groups or totals either.
+- **Expressions see vault-relative paths**, exactly as in Obsidian (`file.folder == "datasources/Reading List"`), even when the account has a `root`. The paths in the response are relative to the root, as everywhere else in the API.
+- **Lookups are scoped as well.** `file("…")`, `link.asFile()`, `file.backlinks` and link resolution all work against the readable notes only. Otherwise a formula like `file("Private/x.md").properties` could read hidden notes.
+- **Read access to a base never adds access to notes.** A base covering the whole vault, queried by the bot, returns only the bot's notes.
+
+### `GET /v1/bases/{path}`
+Returns the parsed base:
+```json
+{
+  "path": "Reading List.base",
+  "rev": "sha256:…",
+  "filters": { "and": ["file.folder == \"datasources/Reading List\""] },
+  "formulas": {},
+  "properties": { "Status": { "displayName": "Status" } },
+  "views": [
+    { "name": "To read", "type": "table", "filters": { "and": ["Status.containsAny(\"Not started\", \"In progress\")"] },
+      "group_by": { "property": "Type", "direction": "ASC" }, "order": ["file.name", "Score", "…"] },
+    { "name": "All items", "type": "table", "order": ["…"] },
+    { "name": "Done articles", "type": "table", "filters": { "and": ["Status == \"Done\"", "Type == \"Article\""] },
+      "sort": [{ "property": "Completed", "direction": "DESC" }] }
+  ],
+  "diagnostics": []
+}
+```
+`diagnostics` lists expressions that don't parse, each as `{ where, message }` (e.g. `where: "views[2].filters"`), so you find out before running a query.
+
+### `POST /v1/bases/{path}/query`
+```json
+{
+  "view": "To read",
+  "filters": "Score >= 3",
+  "sort": [{ "property": "Score", "direction": "DESC" }],
+  "select": ["file.name", "Score", "Link"],
+  "this": "Dashboards/eink.md",
+  "limit": 50,
+  "cursor": null,
+  "sample": 3,
+  "seed": "2026-10-01",
+  "count_only": false,
+  "include": ["frontmatter", "body"]
+}
+```
+Every field is optional.
+
+| Field | Meaning |
+|---|---|
+| `view` | Which view to run, by name. Defaults to the first view. |
+| `filters` | Extra filter (expression string or `and`/`or`/`not` tree), ANDed with the base's and the view's own. |
+| `sort` | Replaces the view's sort. |
+| `select` | Replaces the view's columns (`order`). Accepts properties, `file.*`, `formula.*`. |
+| `this` | The note that `this` refers to, as a path relative to the account root. Defaults to the base file itself. Must be readable, or the request returns 404. |
+| `limit`, `cursor` | Paging. The view's own `limit`, if it has one, caps the total. |
+| `sample` | N random matching rows, like folder listings. Add `seed` to get the same picks again. |
+| `count_only` | Returns `{ "total": N, "groups": […] }` only. |
+| `include` | `frontmatter` adds every frontmatter property, not just the selected columns. `body` adds the note text, and is allowed only with `sample` or a `limit` of 20 or less. |
+
+Response for the "To read" view:
+```json
+{
+  "base": "Reading List.base",
+  "view": { "name": "To read", "type": "table" },
+  "columns": [
+    { "key": "file.name", "name": "Name" },
+    { "key": "Score", "name": "Score" },
+    { "key": "Status", "name": "Status" }
+  ],
+  "total": 37,
+  "groups": [{ "key": "Article", "count": 30 }, { "key": "Book", "count": 7 }],
+  "results": [
+    { "path": "Some article.md", "group": "Article",
+      "values": { "file.name": "Some article", "Score": 4, "Status": "Not started" } }
+  ],
+  "next_cursor": "…", "has_more": true,
+  "diagnostics": []
+}
+```
+- **Grouping keeps one flat list.** Rows come sorted by group first and then by the view's sort, and each row carries its `group`. `groups` gives the count for each group, so paging works the same as without grouping.
+- **Values are plain JSON.** Dates come back as ISO strings, lists as arrays and links as `"[[Target]]"`, the same way they are written in frontmatter.
+- **`columns` gives display names** from the base's `properties`, falling back to the key.
+- **Sorting:** values compare according to their type, and empty values go last whatever the direction.
+- **The view `type` makes no difference.** Table, cards, list and map views all return the same rows; `type` is passed through for the client.
+- **Errors:**
+  - An unknown `view` returns 400, with `details.available_views` listing the base's views.
+  - A request `filters` that doesn't parse returns 400, with `details.diagnostics`.
+  - A broken filter inside the base returns 200 with no rows, and the problem listed in `diagnostics`.
+  - Runtime failures are counted per expression: `{ where, message, rows }`.
+  - A `.base` file that isn't valid YAML returns 422 `invalid_base`.
+- **No view at all:** a base without `views` runs its global filters, with `file.name` plus the keys of `properties` as columns.
+
+### `POST /v1/query`
+Runs an unsaved view, with the same engine and the same response as a base query. The body is the same plus `from` and `formulas`; it has no `view` and no `this`:
+```json
+{ "from": ["datasources/Reading List"], "filters": "Status == \"Not started\"", "formulas": { "age": "(now() - file.ctime).days" },
+  "sort": [{ "property": "formula.age", "direction": "DESC" }], "select": ["file.name", "formula.age"], "limit": 20 }
+```
+- **`from`** is a list of folders to search, relative to the account root, and subfolders are included. It defaults to the account root, while a base always starts from the whole vault.
+  - Access to each folder in `from` is checked the same way as for a listing, and an unknown or hidden folder returns 404.
+  - If one folder in `from` is inside another, only the outer one is used.
+- **`group_by`** works like a view's `groupBy`.
+- **Columns** default to `file.name` plus one column for each formula.
+
+### Not in this design (yet)
+- **`summaries`** (per-column totals, averages, …). These are view footers. They can be added as a `summaries` field in the response.
+- **Editing `.base` files** beyond what `PUT /v1/files/…` already allows.
+- **Creating notes "in" a view.** Obsidian works out a new note's properties from the view's filters, and the library supports this through `inferDefaultsFromFilter`. It would let the bot do `POST /v1/bases/Reading List.base/notes`, with the folder and `Status` filled in automatically. It's a candidate for later.
+
 ## Implementation notes
 
 - **Stack:** Node 22+, Fastify (HTTP; pino logging, body limits), zod (config and request validation, called inside handlers), `yaml` (config and frontmatter; keeps comments in both), a small hand-written markdown scanner (headings, block ids, tags, links; fenced code is skipped), and chokidar (filesystem watcher).
@@ -363,8 +489,7 @@ Once query exists, the reading-list bot can filter by `status == "to-read"` on t
 - **Trash layout.** `.trash/` uses Obsidian's local layout: the original relative path, plus a numeric suffix if a file of that name is already there.
 
 ## Later
-- **Query:** `POST /v1/query`, an unsaved Base view: `from`, `filters`, `formulas`, `sort`, `limit`, `sample` and `count_only`, using the Bases expression language via `obsidian-bases-expression`.
-- **Bases:** `GET /v1/bases/{path}` and `POST /v1/bases/{path}/query {view, filters, sample, this}`. Rows are always limited to the notes the account can read.
+- **Bases:** `GET /v1/bases` listing, `summaries`, and creating notes through a view (see *Bases*).
 - **Search:** `GET /v1/search?q=` using lexical BM25 first, with `mode=semantic|hybrid` added later.
 - **Stats (for Grafana):** `GET /v1/stats?metric=created|modified&interval=day|week|month&from=&to=&folder=` → `{ "buckets": [{ "t": "2026-09-01", "count": 5 }] }`, in a format the Grafana Infinity datasource reads directly. Counts only notes the account can see.
 - **Changes feed:** `GET /v1/changes?since=&wait=` (long-poll), built on the same filesystem watcher.

@@ -47,7 +47,7 @@ Inside the container the config must use `server.host: 0.0.0.0`. To control who 
 
 ## Try it with Bruno
 
-[`bruno/`](bruno) is a [Bruno](https://www.usebruno.com) collection (OpenCollection YAML) that covers every endpoint. Open the folder in Bruno and pick the **local** environment. Set `token` (secret) and `note`, an existing note path such as `Inbox`, and `baseUrl` if the server isn't on `127.0.0.1:8787`.
+[`bruno/`](bruno) is a [Bruno](https://www.usebruno.com) collection (OpenCollection YAML) that covers every endpoint. Open the folder in Bruno and pick the **local** environment. Set `token` (secret) and `note`, an existing note path such as `Inbox`, and `baseUrl` if the server isn't on `127.0.0.1:8787`. For the Bases requests, also set `base` (e.g. `Reading List.base`) and `view` (one of its view names).
 
 To run everything from the terminal:
 

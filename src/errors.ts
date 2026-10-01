@@ -9,6 +9,7 @@ export type ErrorCode =
   | 'patch_target_not_found'
   | 'patch_target_ambiguous'
   | 'folder_not_empty'
+  | 'invalid_base'
   | 'payload_too_large'
   | 'rate_limited'
   | 'internal';

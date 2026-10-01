@@ -1,0 +1,28 @@
+info:
+  name: Query first view
+  type: http
+  seq: 2
+http:
+  method: POST
+  url: '{{baseUrl}}/v1/bases/{{base}}/query'
+  body:
+    type: json
+    data: |-
+      {}
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Runs the base's first view, as Obsidian would: the base's filters plus the view's filters, sort, group-by, limit and columns.
+
+  Rows only come from notes this token can read. The response includes `columns` (with display names), `total`, `groups` for grouped views, `results` (`path`, `group`, `values`), paging, and `diagnostics`.

@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastif
 import type { Account } from '../config.js';
 import { ApiError } from '../errors.js';
 import { hashToken, isExpired } from '../tokens.js';
+import { baseRoutes } from './bases.js';
 import { Ctx, sendError, type Services } from './context.js';
 import { fileRoutes } from './files.js';
 import { folderRoutes } from './folders.js';
@@ -89,6 +90,7 @@ export function buildServer(s: Services, opts: { logger?: FastifyServerOptions['
 
   noteRoutes(app, s);
   folderRoutes(app, s);
+  baseRoutes(app, s);
   app.register(async (scope) => fileRoutes(scope, s));
 
   return app;

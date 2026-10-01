@@ -39,6 +39,8 @@ export class VaultIndex {
   private readonly byName = new Map<string, Set<string>>();
   private watcher: FSWatcher | null = null;
   private pending = new Map<string, Promise<void>>();
+  /** Bumped on every change, so caches built from the index know when they're stale. */
+  version = 0;
 
   constructor(
     readonly root: string,
@@ -55,6 +57,11 @@ export class VaultIndex {
 
   childrenOf(folder: string): Entry[] {
     return [...(this.children.get(folder) ?? [])].map((p) => this.entries.get(p)!).filter(Boolean);
+  }
+
+  /** Every file (notes and attachments), no folders. */
+  files(): Entry[] {
+    return [...this.entries.values()].filter((e) => e.kind !== 'folder');
   }
 
   notes(): IterableIterator<Entry> {
@@ -128,6 +135,7 @@ export class VaultIndex {
   }
 
   private put(entry: Entry): void {
+    this.version++;
     const old = this.entries.get(entry.path);
     if (old && old.kind === 'folder' && entry.kind !== 'folder') this.removeTree(entry.path);
     this.entries.set(entry.path, entry);
@@ -143,6 +151,7 @@ export class VaultIndex {
   private removeTree(p: string): void {
     const e = this.entries.get(p);
     if (!e) return;
+    this.version++;
     for (const child of [...(this.children.get(p) ?? [])]) this.removeTree(child);
     this.children.delete(p);
     this.entries.delete(p);

@@ -9,6 +9,7 @@ import { ConfigManager } from '../src/config.js';
 import { hashToken } from '../src/tokens.js';
 
 export const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/vault');
+export const BASES_FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/bases-vault');
 
 /** Test accounts; each gets a token `tok-<name>`. */
 export const ACCOUNTS = {
@@ -24,6 +25,7 @@ export const ACCOUNTS = {
 } as const;
 
 export type AccountName = keyof typeof ACCOUNTS;
+type AccountSpec = { root?: string; rate_limit?: string; access: Record<string, unknown>; expires?: string };
 
 export interface TestEnv {
   dir: string;
@@ -32,14 +34,18 @@ export interface TestEnv {
   auditPath: string;
   app: App;
   configs: ConfigManager;
-  req(account: AccountName | null, opts: InjectOptions): Promise<LightMyRequestResponse>;
+  req(account: AccountName | (string & {}) | null, opts: InjectOptions): Promise<LightMyRequestResponse>;
   cleanup(): Promise<void>;
 }
 
-export function writeConfig(file: string, vault: string, extra: { vault?: Record<string, unknown>; audit?: string } = {}) {
+export function writeConfig(
+  file: string,
+  vault: string,
+  extra: { vault?: Record<string, unknown>; audit?: string; accounts?: Record<string, AccountSpec> } = {},
+) {
   const accounts = Object.fromEntries(
-    Object.entries(ACCOUNTS).map(([name, a]) => {
-      const { expires, ...rest } = a as typeof a & { expires?: string };
+    Object.entries(extra.accounts ?? (ACCOUNTS as Record<string, AccountSpec>)).map(([name, a]) => {
+      const { expires, ...rest } = a;
       return [name, { ...rest, tokens: [{ name: 'test', sha256: hashToken(`tok-${name}`), ...(expires ? { expires } : {}) }] }];
     }),
   );
@@ -55,16 +61,24 @@ export function writeConfig(file: string, vault: string, extra: { vault?: Record
 }
 
 /** Copies the fixture vault into a temp dir and starts an app (no network; use `req`). */
-export async function setup(opts: { watch?: boolean; vault?: Record<string, unknown>; prepare?: (vault: string) => void } = {}): Promise<TestEnv> {
+export async function setup(
+  opts: {
+    watch?: boolean;
+    fixture?: string;
+    accounts?: Record<string, AccountSpec>;
+    vault?: Record<string, unknown>;
+    prepare?: (vault: string) => void;
+  } = {},
+): Promise<TestEnv> {
   const dir = mkdtempSync(path.join(tmpdir(), 'vault-api-test-'));
   const vault = path.join(dir, 'vault');
-  cpSync(FIXTURE, vault, { recursive: true });
+  cpSync(opts.fixture ?? FIXTURE, vault, { recursive: true });
   mkdirSync(path.join(vault, '.git'));
   writeFileSync(path.join(vault, '.git/config'), '[core]\n');
   opts.prepare?.(vault);
   const configPath = path.join(dir, 'vault-api.yaml');
   const auditPath = path.join(dir, 'audit.jsonl');
-  writeConfig(configPath, vault, { vault: opts.vault, audit: auditPath });
+  writeConfig(configPath, vault, { vault: opts.vault, audit: auditPath, accounts: opts.accounts });
   const configs = ConfigManager.load(configPath, { info() {}, error() {} });
   const app = await createApp(configs, { watch: opts.watch });
   return {

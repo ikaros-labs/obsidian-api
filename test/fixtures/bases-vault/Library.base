@@ -1,0 +1,46 @@
+filters:
+  and:
+    - file.folder == "datasources/Library"
+properties:
+  file.name:
+    displayName: Name
+  Score:
+    displayName: Score
+  Type:
+    displayName: Type
+  Status:
+    displayName: Status
+  Completed:
+    displayName: Completed
+views:
+  - type: table
+    name: To read
+    filters:
+      and:
+        - Status.containsAny("Not started", "In progress")
+    groupBy:
+      property: Type
+      direction: ASC
+    order:
+      - file.name
+      - Score
+      - Status
+      - Type
+  - type: table
+    name: All items
+    order:
+      - file.name
+      - Type
+      - Status
+  - type: table
+    name: Done articles
+    filters:
+      and:
+        - Status == "Done"
+        - Type == "Article"
+    sort:
+      - property: Completed
+        direction: DESC
+    order:
+      - file.name
+      - Completed

@@ -1,0 +1,32 @@
+info:
+  name: Count a view
+  type: http
+  seq: 5
+http:
+  method: POST
+  url: '{{baseUrl}}/v1/bases/{{base}}/query'
+  body:
+    type: json
+    data: |-
+      {
+        "view": "{{view}}",
+        "count_only": true
+      }
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+      test("has total", function () {
+        expect(res.getBody().total).to.be.a("number");
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Returns only `total`, plus `groups` with a count for each group if the view is grouped.

@@ -1,0 +1,42 @@
+info:
+  name: 'Query a view: extra filter, sort, columns'
+  type: http
+  seq: 4
+http:
+  method: POST
+  url: '{{baseUrl}}/v1/bases/{{base}}/query'
+  body:
+    type: json
+    data: |-
+      {
+        "view": "{{view}}",
+        "filters": "file.mtime > now() - \"30 days\"",
+        "sort": [
+          {
+            "property": "file.mtime",
+            "direction": "DESC"
+          }
+        ],
+        "select": [
+          "file.name",
+          "file.mtime"
+        ],
+        "limit": 10
+      }
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Narrows `{{view}}` with an extra filter, which is ANDed with the base's and the view's own filters. The request also replaces the view's sort and columns.
+
+  `filters` takes an expression string or an `and`/`or`/`not` tree, written in the Bases language. Adapt the property names to your base.

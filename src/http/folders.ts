@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { readdir } from 'node:fs/promises';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -7,6 +6,7 @@ import { splitFrontmatter } from '../markdown.js';
 import { join, parsePlainPath, split } from '../paths.js';
 import { entryName, type Entry, type Kind } from '../vault-index.js';
 import { Ctx, iso, parse, project, type Services } from './context.js';
+import { cursorKey, page as pageOf, sample } from './paging.js';
 
 const PREFIX = '/v1/folders/';
 
@@ -77,34 +77,6 @@ function counts(items: Item[], kind: z.infer<typeof KindFilter>) {
   return out;
 }
 
-/** Deterministic PRNG (mulberry32) seeded from a string. */
-function rng(seed: string): () => number {
-  let h = createHash('sha256').update(seed).digest().readUInt32LE(0);
-  return () => {
-    h = (h + 0x6d2b79f5) | 0;
-    let t = Math.imul(h ^ (h >>> 15), 1 | h);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function cursorKey(ctx: Ctx, folder: string, q: Record<string, unknown>): string {
-  const { cursor: _c, ...rest } = q;
-  return createHash('sha256').update(JSON.stringify([ctx.account.name, folder, rest])).digest('base64url').slice(0, 12);
-}
-
-const encodeCursor = (offset: number, key: string) => Buffer.from(JSON.stringify({ o: offset, k: key })).toString('base64url');
-
-function decodeCursor(cursor: string, key: string): number {
-  try {
-    const c = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { o: unknown; k: unknown };
-    if (c.k === key && typeof c.o === 'number' && Number.isInteger(c.o) && c.o >= 0) return c.o;
-  } catch {
-    // fall through
-  }
-  throw invalidRequest('Invalid cursor (cursors only work with the same path and parameters)');
-}
-
 export function folderRoutes(app: FastifyInstance, s: Services) {
   const list = async (ctx: Ctx) => {
     const q = parse(ListQuery, ctx.req.query, 'query');
@@ -121,13 +93,11 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
     let nextCursor: string | null = null;
 
     if (q.sample !== undefined) {
-      const pool = matching.filter((i) => !i.traverseOnly);
-      const random = q.seed !== undefined ? rng(q.seed) : Math.random;
-      for (let i = pool.length - 1; i > 0; i--) {
-        const j = Math.floor(random() * (i + 1));
-        [pool[i], pool[j]] = [pool[j]!, pool[i]!];
-      }
-      page = pool.slice(0, q.sample);
+      page = sample(
+        matching.filter((i) => !i.traverseOnly),
+        q.sample,
+        q.seed,
+      );
     } else {
       const desc = q.sort.startsWith('-');
       const field = q.sort.replace('-', '') as 'name' | 'created' | 'modified';
@@ -136,10 +106,10 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
         const d = field === 'name' ? byPath(a, b) : a.e[field] - b.e[field] || byPath(a, b);
         return desc ? -d : d;
       });
-      const key = cursorKey(ctx, folder.path, q);
-      const offset = q.cursor ? decodeCursor(q.cursor, key) : 0;
-      page = matching.slice(offset, offset + q.limit);
-      if (offset + q.limit < matching.length) nextCursor = encodeCursor(offset + q.limit, key);
+      const { cursor: _c, ...rest } = q;
+      const p = pageOf(matching, q.limit, q.cursor, cursorKey([ctx.account.name, folder.path, rest]));
+      page = p.slice;
+      nextCursor = p.next_cursor;
     }
 
     const results = await Promise.all(

@@ -9,6 +9,10 @@ const RATE_RE = /^(\d+)\/(sec|min|hour)$/;
 const SIZE_RE = /^(\d+)(b|kb|mb)?$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}(T[\d:.]+(Z|[+-]\d{2}:\d{2})?)?$/;
 
+/** Property types as Obsidian stores them in .obsidian/types.json. */
+export const OBSIDIAN_TYPES = ['text', 'multitext', 'number', 'checkbox', 'date', 'datetime', 'aliases', 'tags'] as const;
+export type ObsidianType = (typeof OBSIDIAN_TYPES)[number];
+
 const PermSchema = z.enum(PERMS);
 const LevelSchema = z.union([
   z.enum(Object.keys(LEVELS) as [Level, ...Level[]]),
@@ -46,6 +50,8 @@ export const ConfigSchema = z.strictObject({
     trash: z.string().default('.trash'),
     follow_symlinks: z.boolean().default(false),
     exclude: z.array(z.string()).default([]),
+    /** Overrides for property types (same names as Obsidian's .obsidian/types.json). */
+    property_types: z.record(z.string(), z.enum(OBSIDIAN_TYPES)).default({}),
   }),
   audit: z.strictObject({ path: z.string().min(1) }).optional(),
   defaults: z.strictObject({ rate_limit: RateSchema.default('120/min') }).prefault({}),
@@ -87,6 +93,7 @@ export interface Config {
   trash: string[] | null;
   followSymlinks: boolean;
   auditPath: string | null;
+  propertyTypes: Record<string, ObsidianType>;
   accounts: Map<string, Account>;
   tokensByHash: Map<string, { account: Account; token: TokenInfo }>;
 }
@@ -234,6 +241,7 @@ export function compileConfig(raw: RawConfig, configPath: string): Config {
     trash,
     followSymlinks: raw.vault.follow_symlinks,
     auditPath,
+    propertyTypes: raw.vault.property_types,
     accounts,
     tokensByHash,
   };

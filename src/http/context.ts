@@ -5,6 +5,7 @@ import type { Account, Config, TokenInfo } from '../config.js';
 import { ApiError, forbidden, invalidRequest, notFound } from '../errors.js';
 import { isPrefix, join, parseUrlPath, split, type Segs } from '../paths.js';
 import type { AuditLog, Vault } from '../vault.js';
+import type { EngineCache, PropertyTypes } from '../bases/engine.js';
 import type { Entry, VaultIndex } from '../vault-index.js';
 
 export interface Services {
@@ -12,6 +13,8 @@ export interface Services {
   index: VaultIndex;
   vault: Vault;
   audit: AuditLog;
+  propertyTypes: PropertyTypes;
+  engineCache: EngineCache;
 }
 
 declare module 'fastify' {

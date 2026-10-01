@@ -6,6 +6,10 @@ variables:
   name: token
 - name: note
   value: ''
+- name: base
+  value: ''
+- name: view
+  value: ''
 - name: folder
   value: ''
 - name: scratchFolder

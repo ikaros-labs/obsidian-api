@@ -1,0 +1,29 @@
+info:
+  name: Get base
+  type: http
+  seq: 1
+  tags:
+  - smoke
+http:
+  method: GET
+  url: '{{baseUrl}}/v1/bases/{{base}}'
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+      test("has views", function () {
+        expect(res.getBody().views).to.be.an("array");
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Returns the parsed `.base` file: filters, formulas, properties and views (with `group_by`, `sort`, `order`, `limit`).
+
+  `diagnostics` lists expressions that don't parse. The `.base` extension is optional.

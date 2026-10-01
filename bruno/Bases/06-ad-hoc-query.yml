@@ -1,0 +1,50 @@
+info:
+  name: Ad-hoc query
+  type: http
+  seq: 6
+http:
+  method: POST
+  url: '{{baseUrl}}/v1/query'
+  body:
+    type: json
+    data: |-
+      {
+        "from": [
+          "{{folder}}"
+        ],
+        "filters": "file.ext == \"md\"",
+        "formulas": {
+          "age_days": "(now() - file.ctime).days"
+        },
+        "sort": [
+          {
+            "property": "file.mtime",
+            "direction": "DESC"
+          }
+        ],
+        "select": [
+          "file.name",
+          "file.mtime",
+          "formula.age_days"
+        ],
+        "limit": 10
+      }
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Runs a view that isn't saved in any base, with the same engine and response format as a base query.
+
+  - `from` lists the folders to search, including subfolders. They're relative to the account root and default to the root.
+  - Also accepts `formulas` and `group_by`.
+  - Rows are all files, including attachments. `file.ext == "md"` keeps only notes.

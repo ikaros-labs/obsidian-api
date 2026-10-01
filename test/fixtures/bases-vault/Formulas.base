@@ -1,0 +1,22 @@
+filters: file.inFolder("datasources/Library") && file.ext == "md"
+formulas:
+  double: Score * 2
+  backlinked: file.backlinks.length
+views:
+  - type: table
+    name: Top two
+    sort:
+      - property: formula.double
+        direction: DESC
+    limit: 2
+    order:
+      - file.name
+      - formula.double
+  - type: cards
+    name: Linked from this
+    filters: this.file.hasLink(file)
+    order:
+      - file.name
+  - type: table
+    name: Broken
+    filters: Score >

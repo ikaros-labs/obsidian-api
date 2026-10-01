@@ -8,6 +8,8 @@ services:
     # Run as the user that owns the vault files, so writes keep the right owner.
     # With rootless Docker use "0:0": container root maps to your own user.
     user: "1000:1000"
+    # environment:
+    #   TZ: Europe/Berlin   # Bases date math (today(), now()) uses the server's time zone
     ports:
       # Publish on one interface only, e.g. your tailnet IP: "100.x.y.z:8787:8787"
       - "127.0.0.1:8787:8787"

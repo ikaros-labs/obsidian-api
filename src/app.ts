@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyServerOptions } from 'fastify';
 import type { ConfigManager } from './config.js';
+import { EngineCache, PropertyTypes } from './bases/engine.js';
 import { buildServer } from './http/server.js';
 import { AuditLog, Vault } from './vault.js';
 import { VaultIndex } from './vault-index.js';
@@ -21,7 +22,10 @@ export async function createApp(
   if (opts.watch) await index.watch((e) => server.log.error(e));
   const vault = new Vault(cfg.vaultPath, index, { followSymlinks: cfg.followSymlinks, trash: cfg.trash });
   const server = buildServer(
-    { config: () => configs.current, index, vault, audit: new AuditLog(() => configs.current.auditPath) },
+    { config: () => configs.current, index, vault, audit: new AuditLog(() => configs.current.auditPath),
+      propertyTypes: new PropertyTypes(cfg.vaultPath, () => configs.current.propertyTypes),
+      engineCache: new EngineCache(),
+    },
     { logger: opts.logger },
   );
   return {
