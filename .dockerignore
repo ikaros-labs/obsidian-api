@@ -1,0 +1,10 @@
+node_modules
+dist
+test
+.git
+.github
+.claude
+deploy
+*.md
+*.yaml
+!package-lock.json

@@ -1,0 +1,19 @@
+# Example deployment. Copy this folder next to your vault, then:
+#   docker compose run --rm vault-api token create reading-bot --name hermes
+#   docker compose up -d
+services:
+  vault-api:
+    image: ghcr.io/ikaros-labs/obsidian-api:latest
+    restart: unless-stopped
+    # Run as the user that owns the vault files, so writes keep the right owner.
+    # With rootless Docker use "0:0": container root maps to your own user.
+    user: "1000:1000"
+    ports:
+      # Publish on one interface only, e.g. your tailnet IP: "100.x.y.z:8787:8787"
+      - "127.0.0.1:8787:8787"
+    volumes:
+      # Mount the folder, not the file: the server reloads the config when it changes,
+      # and the token CLI rewrites it in place.
+      - ./config:/config
+      - /path/to/your/vault:/vault
+      - ./data:/data

@@ -1,0 +1,26 @@
+# Paths are as seen inside the container (see docker-compose.yml).
+version: 1
+
+server:
+  host: 0.0.0.0   # inside the container; restrict exposure with the port mapping instead
+  port: 8787
+
+vault:
+  path: /vault
+  exclude:
+    - Private
+
+audit:
+  path: /data/audit.jsonl
+
+accounts:
+  reading-bot:
+    description: Telegram reading-list bot
+    root: Reading List
+    access:
+      .: [read, create, update]
+
+  eink:
+    description: E-ink dashboard
+    access:
+      Dashboards/eink.md: read

@@ -30,6 +30,21 @@ accounts:
 
 The server reloads the config when the file changes or on `SIGHUP`. If the new config is invalid, it keeps the old one. Set `LOG_LEVEL` to change log verbosity.
 
+## Docker
+
+Pushes to `main` and `v*` tags build a multi-arch image (`linux/amd64`, `linux/arm64`) and publish it as `ghcr.io/ikaros-labs/obsidian-api`, after tests pass. Pull requests only build the image.
+
+[`deploy/`](deploy) has a compose example and a sample config:
+
+```sh
+cp -r deploy ~/vault-api && cd ~/vault-api
+# edit docker-compose.yml (vault path, port binding) and config/vault-api.yaml
+docker compose run --rm vault-api token create reading-bot --name hermes
+docker compose up -d
+```
+
+Inside the container the config must use `server.host: 0.0.0.0`. To control who can reach the server, use the port mapping instead, e.g. bind it to your tailnet IP only.
+
 ## Develop
 
 ```sh
