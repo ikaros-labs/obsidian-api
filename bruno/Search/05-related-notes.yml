@@ -1,0 +1,34 @@
+info:
+  name: Related notes (more like this)
+  type: http
+  seq: 5
+http:
+  method: GET
+  url: '{{baseUrl}}/v1/related?path={{note}}&limit=10&fields=path,score,matched'
+  params:
+  - name: path
+    value: '{{note}}'
+    type: query
+  - name: limit
+    value: '10'
+    type: query
+  - name: fields
+    value: path,score,matched
+    type: query
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Notes most similar to `{{note}}`: its 25 most distinctive terms (tf × idf over what the account can read, ignoring numbers, URL parts and words no other note has), scored with BM25 as an OR query. `terms` in the response lists them. Takes `folder`, `limit`, `terms` (1–100), `cursor` and `fields`.
+
+  Meant for Hermes recall: "what else have I written about this?"

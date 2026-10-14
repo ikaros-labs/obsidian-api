@@ -1,0 +1,34 @@
+info:
+  name: Search any word in a folder
+  type: http
+  seq: 2
+http:
+  method: GET
+  url: '{{baseUrl}}/v1/search?q={{query}}&match=any&folder={{folder}}&fields=path,score,matched'
+  params:
+  - name: q
+    value: '{{query}}'
+    type: query
+  - name: match
+    value: any
+    type: query
+  - name: folder
+    value: '{{folder}}'
+    type: query
+  - name: fields
+    value: path,score,matched
+    type: query
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: '`match=any` ranks notes that contain at least one of the words. `folder` narrows the search to one subtree (relative to the account root); a folder the account can''t see is a 404.'

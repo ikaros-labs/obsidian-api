@@ -40,7 +40,7 @@ interface Item {
 }
 
 /** The folder entry to list, if the account may list it at all. */
-async function listableFolder(ctx: Ctx, segs: string[]): Promise<Entry> {
+export async function listableFolder(ctx: Ctx, segs: string[]): Promise<Entry> {
   await ctx.s.vault.resolve(segs);
   const e = ctx.s.index.get(join(segs));
   if (!e || e.kind !== 'folder' || !(ctx.visible(e) || ctx.traversable(e))) throw notFound();

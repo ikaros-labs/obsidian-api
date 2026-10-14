@@ -45,9 +45,44 @@ docker compose up -d
 
 Inside the container the config must use `server.host: 0.0.0.0`. To control who can reach the server, use the port mapping instead, e.g. bind it to your tailnet IP only.
 
+## Search and stats
+
+`GET /v1/search?q=` is BM25 full-text search over the notes the account can read. It stems Russian and English words, so `принтеры` finds `принтер`. It supports `"phrases"`, `-exclusions` and `prefix*` queries. `GET /v1/related?path=` returns similar notes (more-like-this), for agent recall. `GET /v1/stats` returns notes created and modified per day, week or month, plus named counters from a `stats:` config section, such as the inbox size or Reading List notes by `Status`. `/v1/stats/metrics` serves the same data as Prometheus text. The details are in [api-design.md](api-design.md#search-and-stats).
+
+Demo against a vault, without touching any real config or token:
+
+```sh
+npx tsx scripts/demo-config.ts --vault ~/hermes-playground/_vault-snapshot   # writes out/demo/vault-api.yaml + fresh random tokens in out/demo/tokens.env
+npx tsx src/cli.ts serve --config out/demo/vault-api.yaml                     # binds 100.66.44.47:8723 (tailnet only), read-only accounts
+. out/demo/tokens.env; API=http://100.66.44.47:8723                         # --host 127.0.0.1 when off the tailnet
+
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" $API/v1/stats/metrics | grep -E 'x_inbox|Not started'
+# vault_folder_notes{counter="x_inbox",path="3. Resources/X/inbox"} 179
+# vault_property_notes{counter="reading",property="Status",value="Not started"} 32
+
+curl -s -G -H "Authorization: Bearer $ADMIN_TOKEN" --data-urlencode 'q=pcb laser' \
+  --data-urlencode 'fields=path,score,matched' --data-urlencode limit=3 $API/v1/search
+# {"query":"pcb laser","total":6,"results":[{"path":"daily/2026-10-09.md","score":14.885,"matched":["pcb","laser"]},
+#  {"path":"inbox/making PCBs in-house.md","score":14.703,…},{"path":"inbox/PCB with CNC + laser (Alvaro's Workshop).md",…}],…}
+
+# Grants apply before scoring: the agent account has "3. Resources/X: none"
+curl -s -G -H "Authorization: Bearer $ADMIN_TOKEN" --data-urlencode 'q=bookmark' $API/v1/search | jq .total   # 229
+curl -s -G -H "Authorization: Bearer $AGENT_TOKEN" --data-urlencode 'q=bookmark' $API/v1/search | jq .total   # 5
+
+curl -s -G -H "Authorization: Bearer $ADMIN_TOKEN" --data-urlencode 'q="reading list" -bot' $API/v1/search | jq .total   # phrase + exclusion
+
+curl -s -G -H "Authorization: Bearer $ADMIN_TOKEN" --data-urlencode 'path=inbox/making PCBs in-house' \
+  --data-urlencode limit=3 --data-urlencode fields=path $API/v1/related
+# {"path":"inbox/making PCBs in-house.md","terms":["laser","lhs","pcb","etch","solder","copper",…],"total":145,
+#  "results":[{"path":"inbox/PCB with CNC + laser (Alvaro's Workshop).md"},{"path":"daily/2026-10-09.md"},
+#             {"path":"3. Resources/Electronics/paper circuit boards.md"}],…}
+```
+
+Use `curl -G --data-urlencode` (or Bruno) for Cyrillic queries: a raw non-ASCII URL is rejected with 400.
+
 ## Try it with Bruno
 
-[`bruno/`](bruno) is a [Bruno](https://www.usebruno.com) collection (OpenCollection YAML) that covers every endpoint. Open the folder in Bruno and pick the **local** environment. Set `token` (secret) and `note`, an existing note path such as `Inbox`, and `baseUrl` if the server isn't on `127.0.0.1:8787`. For the Bases requests, also set `base` (e.g. `Reading List.base`) and `view` (one of its view names).
+[`bruno/`](bruno) is a [Bruno](https://www.usebruno.com) collection (OpenCollection YAML) that covers every endpoint. Open the folder in Bruno and pick the **local** environment. Set `token` (secret) and `note`, an existing note path such as `Inbox`, and `baseUrl` if the server isn't on `127.0.0.1:8787`. For the Bases requests, also set `base` (e.g. `Reading List.base`) and `view` (one of its view names). The Search requests use `query`, and Related uses `note`.
 
 To run everything from the terminal:
 
@@ -76,5 +111,7 @@ npm run cli -- check -c vault-api.yaml   # run the CLI from source
 | `src/vault.ts` | Filesystem operations, locks, trash, audit log |
 | `src/markdown.ts` | Frontmatter, headings, blocks, tags, links |
 | `src/patch.ts` | PATCH operations |
+| `src/search/` | Tokeniser (Snowball Russian, light English stemmer) and the BM25 index |
+| `src/stats.ts` | Date buckets, property counters, Prometheus text |
 | `src/http/` | Fastify server and routes |
 | `src/cli.ts` | `serve`, `check`, `explain`, `token` |

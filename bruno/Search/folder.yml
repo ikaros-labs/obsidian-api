@@ -1,0 +1,8 @@
+info:
+  name: Search
+  type: folder
+  seq: 7
+request:
+  auth: inherit
+docs: |-
+  Full-text BM25 search over the notes the account can read.

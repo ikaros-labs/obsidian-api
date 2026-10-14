@@ -1,0 +1,28 @@
+info:
+  name: Modified per week (Grafana)
+  type: http
+  seq: 2
+http:
+  method: GET
+  url: '{{baseUrl}}/v1/stats?metric=modified&interval=week'
+  params:
+  - name: metric
+    value: modified
+    type: query
+  - name: interval
+    value: week
+    type: query
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: 'With `metric=created|modified` the response is a single series, `{ buckets: [{ t, count }] }`, which the Grafana Infinity datasource reads directly (root selector `buckets`).'

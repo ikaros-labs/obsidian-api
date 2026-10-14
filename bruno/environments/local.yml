@@ -16,3 +16,5 @@ variables:
   value: Bruno
 - name: cursor
   value: ''
+- name: query
+  value: reading list

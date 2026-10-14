@@ -28,6 +28,19 @@ const TokenSchema = z.strictObject({
   expires: DateSchema.nullable().optional(),
 });
 
+const CounterName = z.string().regex(/^[a-z][a-z0-9_]*$/, 'lowercase letters, digits and "_" only (used as a metric label)');
+
+const StatsSchema = z
+  .strictObject({
+    /** IANA time zone for day/week/month buckets. */
+    timezone: z.string().default('UTC'),
+    /** Named folder counters (vault-relative paths), e.g. `x_inbox: 3. Resources/X/inbox`. */
+    folders: z.record(CounterName, z.string()).default({}),
+    /** Named "notes by property value" counters, e.g. Reading List notes by Status. */
+    properties: z.record(CounterName, z.strictObject({ folder: z.string(), property: z.string().min(1) })).default({}),
+  })
+  .prefault({});
+
 const AccountSchema = z.strictObject({
   description: z.string().optional(),
   root: z.string().default(''),
@@ -54,6 +67,7 @@ export const ConfigSchema = z.strictObject({
     property_types: z.record(z.string(), z.enum(OBSIDIAN_TYPES)).default({}),
   }),
   audit: z.strictObject({ path: z.string().min(1) }).optional(),
+  stats: StatsSchema,
   defaults: z.strictObject({ rate_limit: RateSchema.default('120/min') }).prefault({}),
   accounts: z.record(z.string().regex(/^[a-z0-9][a-z0-9_-]*$/i, 'letters, digits, "_" and "-" only'), AccountSchema).default({}),
 });
@@ -94,8 +108,16 @@ export interface Config {
   followSymlinks: boolean;
   auditPath: string | null;
   propertyTypes: Record<string, ObsidianType>;
+  stats: StatsConfig;
   accounts: Map<string, Account>;
   tokensByHash: Map<string, { account: Account; token: TokenInfo }>;
+}
+
+export interface StatsConfig {
+  timezone: string;
+  /** Vault-relative segments per counter name. */
+  folders: { name: string; segs: string[] }[];
+  properties: { name: string; segs: string[]; property: string }[];
 }
 
 export class ConfigError extends Error {
@@ -126,6 +148,15 @@ function realpathLoose(p: string): string {
   if (existsSync(abs)) return realpathSync(abs);
   const parent = path.dirname(abs);
   return parent === abs ? abs : path.join(realpathLoose(parent), path.basename(abs));
+}
+
+export function isTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Parses YAML text into a raw, schema-checked config. Throws ConfigError. */
@@ -182,6 +213,17 @@ export function compileConfig(raw: RawConfig, configPath: string): Config {
   });
   // A trash folder without a leading dot would otherwise be visible.
   if (trash && trash.length > 0 && !hasDotSegment(trash)) exclude.push(trash);
+
+  if (!isTimeZone(raw.stats.timezone)) problems.push(`stats.timezone: unknown time zone "${raw.stats.timezone}"`);
+  const stats: StatsConfig = { timezone: raw.stats.timezone, folders: [], properties: [] };
+  for (const [name, p] of Object.entries(raw.stats.folders)) {
+    const segs = tryPath(p, `stats.folders.${name}`);
+    if (segs) stats.folders.push({ name, segs });
+  }
+  for (const [name, c] of Object.entries(raw.stats.properties)) {
+    const segs = tryPath(c.folder, `stats.properties.${name}.folder`);
+    if (segs) stats.properties.push({ name, segs, property: c.property });
+  }
 
   const accounts = new Map<string, Account>();
   const tokensByHash = new Map<string, { account: Account; token: TokenInfo }>();
@@ -242,6 +284,7 @@ export function compileConfig(raw: RawConfig, configPath: string): Config {
     followSymlinks: raw.vault.follow_symlinks,
     auditPath,
     propertyTypes: raw.vault.property_types,
+    stats,
     accounts,
     tokensByHash,
   };
