@@ -1,0 +1,25 @@
+info:
+  name: Stats
+  type: http
+  seq: 1
+http:
+  method: GET
+  url: '{{baseUrl}}/v1/stats'
+  params: []
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: |-
+  Notes the account can read, created/modified per day for the last 30 days, and the counters from the `stats:` config section (`folders` and `properties`, e.g. X inbox size and Reading List by Status).
+
+  Parameters: `interval=day|week|month`, `from`, `to` (YYYY-MM-DD), `folder`, `tz` (IANA, defaults to `stats.timezone`).

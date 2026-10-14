@@ -1,0 +1,8 @@
+info:
+  name: Stats
+  type: folder
+  seq: 8
+request:
+  auth: inherit
+docs: |-
+  Activity and counters for dashboards (JSON for Grafana Infinity, Prometheus text).

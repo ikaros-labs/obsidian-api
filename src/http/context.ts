@@ -6,6 +6,7 @@ import { ApiError, forbidden, invalidRequest, notFound } from '../errors.js';
 import { isPrefix, join, parseUrlPath, split, type Segs } from '../paths.js';
 import type { AuditLog, Vault } from '../vault.js';
 import type { EngineCache, PropertyTypes } from '../bases/engine.js';
+import type { SearchIndex } from '../search/index.js';
 import type { Entry, VaultIndex } from '../vault-index.js';
 
 export interface Services {
@@ -15,6 +16,7 @@ export interface Services {
   audit: AuditLog;
   propertyTypes: PropertyTypes;
   engineCache: EngineCache;
+  search: SearchIndex;
 }
 
 declare module 'fastify' {

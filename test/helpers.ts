@@ -41,7 +41,12 @@ export interface TestEnv {
 export function writeConfig(
   file: string,
   vault: string,
-  extra: { vault?: Record<string, unknown>; audit?: string; accounts?: Record<string, AccountSpec> } = {},
+  extra: {
+    vault?: Record<string, unknown>;
+    audit?: string;
+    accounts?: Record<string, AccountSpec>;
+    stats?: Record<string, unknown>;
+  } = {},
 ) {
   const accounts = Object.fromEntries(
     Object.entries(extra.accounts ?? (ACCOUNTS as Record<string, AccountSpec>)).map(([name, a]) => {
@@ -55,6 +60,7 @@ export function writeConfig(
       version: 1,
       vault: { path: vault, ...extra.vault },
       ...(extra.audit ? { audit: { path: extra.audit } } : {}),
+      ...(extra.stats ? { stats: extra.stats } : {}),
       accounts,
     }),
   );
@@ -67,6 +73,7 @@ export async function setup(
     fixture?: string;
     accounts?: Record<string, AccountSpec>;
     vault?: Record<string, unknown>;
+    stats?: Record<string, unknown>;
     prepare?: (vault: string) => void;
   } = {},
 ): Promise<TestEnv> {
@@ -78,7 +85,7 @@ export async function setup(
   opts.prepare?.(vault);
   const configPath = path.join(dir, 'vault-api.yaml');
   const auditPath = path.join(dir, 'audit.jsonl');
-  writeConfig(configPath, vault, { vault: opts.vault, audit: auditPath, accounts: opts.accounts });
+  writeConfig(configPath, vault, { vault: opts.vault, audit: auditPath, accounts: opts.accounts, stats: opts.stats });
   const configs = ConfigManager.load(configPath, { info() {}, error() {} });
   const app = await createApp(configs, { watch: opts.watch });
   return {
