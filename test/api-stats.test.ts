@@ -127,11 +127,11 @@ describe('GET /v1/stats/metrics', () => {
     const { status, headers, text } = await get('admin', '/v1/stats/metrics');
     expect(status).toBe(200);
     expect(headers['content-type']).toBe('text/plain; version=0.0.4; charset=utf-8');
-    expect(text).toContain('# TYPE vault_notes gauge\nvault_notes 14\n');
-    expect(text).toContain('vault_notes_created{window="24h"} 14\n');
-    expect(text).toContain('vault_folder_notes{counter="x_inbox",path="X/inbox"} 3\n');
-    expect(text).toContain('vault_property_notes{counter="reading",property="status",value="to-read"} 2\n');
-    expect(text).toMatch(/^vault_last_modified_timestamp_seconds \d+$/m);
+    expect(text).toContain('# TYPE spall_notes gauge\nspall_notes 14\n');
+    expect(text).toContain('spall_notes_created{window="24h"} 14\n');
+    expect(text).toContain('spall_folder_notes{counter="x_inbox",path="X/inbox"} 3\n');
+    expect(text).toContain('spall_property_notes{counter="reading",property="status",value="to-read"} 2\n');
+    expect(text).toMatch(/^spall_last_modified_timestamp_seconds \d+$/m);
     for (const line of text.trimEnd().split('\n')) {
       expect(line).toMatch(/^(# (HELP|TYPE) \w+ .+|\w+(\{[^}]*\})? (\d+|NaN))$/);
     }
@@ -139,10 +139,10 @@ describe('GET /v1/stats/metrics', () => {
 
   it('is scoped to the account', async () => {
     const { text } = await get('agent', '/v1/stats/metrics');
-    expect(text).toContain('vault_notes 3\n');
+    expect(text).toContain('spall_notes 3\n');
     expect(text).not.toContain('x_inbox');
     expect(text).not.toContain('private');
-    expect(text).not.toContain('vault_property_notes{');
+    expect(text).not.toContain('spall_property_notes{');
   });
 
   it('requires a token', async () => {

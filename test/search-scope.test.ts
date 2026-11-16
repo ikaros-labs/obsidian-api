@@ -121,7 +121,7 @@ describe('stats and metrics scope', () => {
   it('metrics expose nothing hidden', async () => {
     const { status, text } = await get('scoped', '/v1/stats/metrics');
     expect(status).toBe(200);
-    expect(text).toContain('vault_notes 2\n');
+    expect(text).toContain('spall_notes 2\n');
     for (const leak of [SECRET, 'Private', 'Excluded', 'excluded', 'private', '.stash']) expect(text).not.toContain(leak);
     const admin = await get('admin', '/v1/stats/metrics');
     expect(admin.text).toContain(`value="${SECRET}"`); // the fixture is meaningful

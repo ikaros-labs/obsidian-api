@@ -77,12 +77,12 @@ describe('countByProperty', () => {
 describe('prometheusText', () => {
   it('renders HELP, TYPE and escaped labels', () => {
     const text = prometheusText([
-      { name: 'vault_notes', help: 'Notes.', type: 'gauge', samples: [{ value: 3 }] },
-      { name: 'vault_x', help: 'X.', type: 'gauge', samples: [{ labels: { value: 'a "b"\\c\nd' }, value: 1 }] },
+      { name: 'spall_notes', help: 'Notes.', type: 'gauge', samples: [{ value: 3 }] },
+      { name: 'spall_x', help: 'X.', type: 'gauge', samples: [{ labels: { value: 'a "b"\\c\nd' }, value: 1 }] },
     ]);
     expect(text).toBe(
-      '# HELP vault_notes Notes.\n# TYPE vault_notes gauge\nvault_notes 3\n' +
-        '# HELP vault_x X.\n# TYPE vault_x gauge\nvault_x{value="a \\"b\\"\\\\c\\nd"} 1\n',
+      '# HELP spall_notes Notes.\n# TYPE spall_notes gauge\nspall_notes 3\n' +
+        '# HELP spall_x X.\n# TYPE spall_x gauge\nspall_x{value="a \\"b\\"\\\\c\\nd"} 1\n',
     );
   });
 });

@@ -138,6 +138,8 @@ scrape_configs:
     static_configs: [{ targets: ["spall:8787"] }]
 ```
 
+The gauges are `spall_notes`, `spall_notes_created{window}` and `spall_notes_modified{window}` (24h, 7d, 30d), `spall_last_modified_timestamp_seconds`, `spall_folder_notes{counter,path}` and `spall_property_notes{counter,property,value}`.
+
 ## Configuration
 
 The config file must live **outside** the vault (the server refuses to start otherwise). It reloads when the file changes or on `SIGHUP`. If the new version is invalid, the server keeps the old one and logs why.
