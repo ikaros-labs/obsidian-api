@@ -2,8 +2,9 @@ import { existsSync, readFileSync, realpathSync, statSync, watch, type FSWatcher
 import path from 'node:path';
 import { parseDocument } from 'yaml';
 import { z } from 'zod';
-import { Access, expandLevel, LEVELS, PERMS, type Grant, type Level, type Perm } from './access.js';
-import { hasDotSegment, join, matchKeys, parsePlainPath } from './paths.js';
+import { AccountAccessSchema, compileAccess, parseExclude, tryPath as tryPathInto, type Access, type Perm } from './access.js';
+import { ConfigError } from './errors.js';
+import { hasDotSegment, join } from './paths.js';
 
 const RATE_RE = /^(\d+)\/(sec|min|hour)$/;
 const SIZE_RE = /^(\d+)(b|kb|mb)?$/i;
@@ -13,11 +14,6 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}(T[\d:.]+(Z|[+-]\d{2}:\d{2})?)?$/;
 export const OBSIDIAN_TYPES = ['text', 'multitext', 'number', 'checkbox', 'date', 'datetime', 'aliases', 'tags'] as const;
 export type ObsidianType = (typeof OBSIDIAN_TYPES)[number];
 
-const PermSchema = z.enum(PERMS);
-const LevelSchema = z.union([
-  z.enum(Object.keys(LEVELS) as [Level, ...Level[]]),
-  z.array(PermSchema).min(1),
-]);
 const RateSchema = z.string().regex(RATE_RE, 'expected e.g. "120/min" (unit: sec, min or hour)');
 const DateSchema = z.string().regex(DATE_RE, 'expected a date like 2027-10-01');
 
@@ -43,9 +39,8 @@ const StatsSchema = z
 
 const AccountSchema = z.strictObject({
   description: z.string().optional(),
-  root: z.string().default(''),
+  ...AccountAccessSchema,
   rate_limit: RateSchema.optional(),
-  access: z.record(z.string(), LevelSchema),
   tokens: z.array(TokenSchema).default([]),
 });
 
@@ -120,12 +115,6 @@ export interface StatsConfig {
   properties: { name: string; segs: string[]; property: string }[];
 }
 
-export class ConfigError extends Error {
-  constructor(readonly problems: string[]) {
-    super(`Invalid config:\n${problems.map((p) => `  - ${p}`).join('\n')}`);
-  }
-}
-
 function parseRate(spec: string): RateLimit {
   const [, n, unit] = RATE_RE.exec(spec)!;
   return { limit: Number(n), windowMs: { sec: 1000, min: 60_000, hour: 3_600_000 }[unit as 'sec' | 'min' | 'hour'], spec };
@@ -175,14 +164,7 @@ export function parseConfigText(text: string): RawConfig {
 /** Checks cross-field rules and builds the runtime config. Throws ConfigError. */
 export function compileConfig(raw: RawConfig, configPath: string): Config {
   const problems: string[] = [];
-  const tryPath = (p: string, where: string): string[] | null => {
-    try {
-      return parsePlainPath(p);
-    } catch (e) {
-      problems.push(`${where}: ${(e as Error).message}`);
-      return null;
-    }
-  };
+  const tryPath = (p: string, where: string) => tryPathInto(p, where, problems);
 
   const configAbs = realpathLoose(configPath);
   const vaultPathRaw = path.resolve(path.dirname(configAbs), raw.vault.path);
@@ -206,11 +188,7 @@ export function compileConfig(raw: RawConfig, configPath: string): Config {
     if (trash && trash.length === 0) problems.push('vault.trash: must be a folder inside the vault, or "none"');
   }
 
-  const exclude: string[][] = [];
-  raw.vault.exclude.forEach((p, i) => {
-    const segs = tryPath(p, `vault.exclude[${i}]`);
-    if (segs) exclude.push(segs);
-  });
+  const exclude = parseExclude(raw.vault.exclude, 'vault.exclude', problems);
   // A trash folder without a leading dot would otherwise be visible.
   if (trash && trash.length > 0 && !hasDotSegment(trash)) exclude.push(trash);
 
@@ -230,36 +208,16 @@ export function compileConfig(raw: RawConfig, configPath: string): Config {
 
   for (const [name, a] of Object.entries(raw.accounts)) {
     const where = `accounts.${name}`;
-    const root = tryPath(a.root, `${where}.root`);
-    if (!root) continue;
-    if (hasDotSegment(root)) problems.push(`${where}.root: dotfiles and dot-folders are always denied`);
-
-    const grants: Grant[] = [];
-    const seen = new Map<string, string>();
-    for (const [key, level] of Object.entries(a.access)) {
-      const segs = tryPath(key, `${where}.access["${key}"]`);
-      if (!segs) continue;
-      const match = matchKeys(segs).join('/');
-      const dup = seen.get(match);
-      if (dup !== undefined) problems.push(`${where}.access: "${key}" and "${dup}" are the same path`);
-      seen.set(match, key);
-      if (hasDotSegment(segs)) problems.push(`${where}.access["${key}"]: dotfiles and dot-folders are always denied`);
-      const perms = expandLevel(level);
-      const needsRead = (['update', 'delete', 'purge'] as const).filter((p) => perms.has(p));
-      if (needsRead.length > 0 && !perms.has('read')) {
-        problems.push(`${where}.access["${key}"]: ${needsRead.join(', ')} requires read`);
-      }
-      const vaultSegs = [...root, ...segs];
-      grants.push({ key: segs.length === 0 ? '.' : join(segs), segs: vaultSegs, match: matchKeys(vaultSegs), perms });
-    }
+    const compiled = compileAccess(a, exclude, where, problems);
+    if (!compiled) continue;
 
     const account: Account = {
       name,
       description: a.description,
-      rootPath: join(root),
-      root,
-      access: new Access(root, grants, exclude),
-      grants: grants.map((g) => ({ path: g.key, permissions: PERMS.filter((p) => g.perms.has(p)) })),
+      rootPath: join(compiled.root),
+      root: compiled.root,
+      access: compiled.access,
+      grants: compiled.grants,
       rateLimit: parseRate(a.rate_limit ?? raw.defaults.rate_limit),
       tokens: a.tokens,
     };

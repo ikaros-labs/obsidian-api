@@ -6,6 +6,7 @@ import { splitFrontmatter } from '../markdown.js';
 import { join, parsePlainPath, split } from '../paths.js';
 import { entryName, type Entry, type Kind } from '../vault-index.js';
 import { Ctx, iso, parse, project, type Services } from './context.js';
+import { doc } from './openapi.js';
 import { cursorKey, page as pageOf, sample } from './paging.js';
 
 const PREFIX = '/v1/folders/';
@@ -139,18 +140,20 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
     };
   };
 
-  app.get('/v1/folders', async (req) => list(new Ctx(req, s)));
-  app.get('/v1/folders/*', async (req) => list(new Ctx(req, s)));
+  const listDoc = { summary: 'List a folder (traverse_only marks folders shown only on the way to readable ones)', tag: 'Folders', query: ListQuery };
+  app.get('/v1/folders', { schema: doc(listDoc) }, async (req) => list(new Ctx(req, s)));
+  app.get('/v1/folders/*', { schema: doc({ ...listDoc, url: '/v1/folders/{path}' }) }, async (req) => list(new Ctx(req, s)));
 
   const count = async (ctx: Ctx) => {
     const q = parse(CountQuery, ctx.req.query, 'query');
     const folder = await listableFolder(ctx, ctx.urlPath('/v1/count/'));
     return { path: ctx.toApi(folder.path), depth: q.depth, ...counts(walk(ctx, folder, q.depth === 'all'), q.kind) };
   };
-  app.get('/v1/count', async (req) => count(new Ctx(req, s)));
-  app.get('/v1/count/*', async (req) => count(new Ctx(req, s)));
+  const countDoc = { summary: 'Count notes, files and folders', tag: 'Folders', query: CountQuery };
+  app.get('/v1/count', { schema: doc(countDoc) }, async (req) => count(new Ctx(req, s)));
+  app.get('/v1/count/*', { schema: doc({ ...countDoc, url: '/v1/count/{path}' }) }, async (req) => count(new Ctx(req, s)));
 
-  app.post('/v1/folders/*', async (req, reply) => {
+  app.post('/v1/folders/*', { schema: doc({ summary: 'Create a folder', tag: 'Folders', url: '/v1/folders/{path}' }) }, async (req, reply) => {
     const ctx = new Ctx(req, s);
     const segs = ctx.urlPath(PREFIX);
     if (segs.length === ctx.account.root.length) throw alreadyExists('');
@@ -164,7 +167,7 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
     return { kind: 'folder', path: ctx.toApi(real) };
   });
 
-  app.delete('/v1/folders/*', async (req, reply) => {
+  app.delete('/v1/folders/*', { schema: doc({ summary: 'Delete a folder (recursive=true for non-empty ones)', tag: 'Folders', url: '/v1/folders/{path}', query: DeleteQuery }) }, async (req, reply) => {
     const ctx = new Ctx(req, s);
     const q = parse(DeleteQuery, req.query, 'query');
     const permanent = q.permanent === 'true';
@@ -193,7 +196,7 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
     });
   });
 
-  app.get('/v1/tags', async (req) => {
+  app.get('/v1/tags', { schema: doc({ summary: 'Tags used in readable notes, with counts', tag: 'Folders', query: TagsQuery }) }, async (req) => {
     const ctx = new Ctx(req, s);
     const q = parse(TagsQuery, req.query, 'query');
     const folder = await listableFolder(ctx, ctx.toVault(parsePlainPath(q.folder)));

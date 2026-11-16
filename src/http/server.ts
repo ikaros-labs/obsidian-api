@@ -8,6 +8,7 @@ import { Ctx, sendError, type Services } from './context.js';
 import { fileRoutes } from './files.js';
 import { folderRoutes } from './folders.js';
 import { noteRoutes } from './notes.js';
+import { doc, registerOpenApi } from './openapi.js';
 import { searchRoutes } from './search.js';
 import { statsRoutes } from './stats.js';
 
@@ -87,9 +88,28 @@ export function buildServer(s: Services, opts: { logger?: FastifyServerOptions['
 
   app.setNotFoundHandler((req, reply) => sendError(reply, new ApiError(404, 'not_found', 'No such endpoint'), req.id));
 
-  app.get('/healthz', async () => ({ ok: true }));
+  registerOpenApi(app);
 
-  app.get('/v1/me', async (req) => {
+  app.register(async (api) => routes(api, s));
+
+  return app;
+}
+
+/** The OpenAPI document. It depends only on the routes, not on the config or the vault. */
+export async function openApiDocument() {
+  const app = buildServer({ config: () => ({ server: { maxBody: 1 } }) } as unknown as Services);
+  await app.ready();
+  const document = app.swagger();
+  await app.close();
+  return document;
+}
+
+function routes(app: FastifyInstance, s: Services) {
+  app.get('/healthz', { schema: doc({ summary: 'Liveness check', tag: 'System', public: true }) }, async () => ({ ok: true }));
+
+  app.get('/openapi.json', { schema: doc({ summary: 'This OpenAPI document', tag: 'System', public: true }) }, async () => app.swagger());
+
+  app.get('/v1/me', { schema: doc({ summary: 'The calling account, its root, grants and token', tag: 'System' }) }, async (req) => {
     const ctx = new Ctx(req, s);
     const a = ctx.account;
     return {
@@ -108,6 +128,4 @@ export function buildServer(s: Services, opts: { logger?: FastifyServerOptions['
   searchRoutes(app, s);
   statsRoutes(app, s);
   app.register(async (scope) => fileRoutes(scope, s));
-
-  return app;
 }

@@ -6,6 +6,7 @@ import type { Hit, Scope } from '../search/index.js';
 import { QueryError } from '../search/query.js';
 import { entryName, type Entry } from '../vault-index.js';
 import { Ctx, iso, parse, project, type Services } from './context.js';
+import { doc } from './openapi.js';
 import { listableFolder } from './folders.js';
 import { cursorKey, page } from './paging.js';
 
@@ -59,7 +60,7 @@ function results(ctx: Ctx, hits: Hit[], q: { limit: number; cursor?: string; fie
 }
 
 export function searchRoutes(app: FastifyInstance, s: Services) {
-  app.get('/v1/search', async (req) => {
+  app.get('/v1/search', { schema: doc({ summary: 'Full-text search (BM25, English and Russian) over readable notes', tag: 'Search', query: SearchQuery }) }, async (req) => {
     const ctx = new Ctx(req, s);
     const q = parse(SearchQuery, req.query, 'query');
     const scope = await scopeOf(ctx, q.folder);
@@ -74,7 +75,7 @@ export function searchRoutes(app: FastifyInstance, s: Services) {
     return { query: q.q, ...results(ctx, hits, q, ['search', rest]) };
   });
 
-  app.get('/v1/related', async (req) => {
+  app.get('/v1/related', { schema: doc({ summary: 'Readable notes most similar to a note', tag: 'Search', query: RelatedQuery }) }, async (req) => {
     const ctx = new Ctx(req, s);
     const q = parse(RelatedQuery, req.query, 'query');
     const segs = ctx.toVault(parsePlainPath(q.path));

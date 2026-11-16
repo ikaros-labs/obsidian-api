@@ -1,11 +1,28 @@
 {
   "name": "spall",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
+  "description": "Scoped REST API for your Obsidian vault: every bot gets only the folders you grant.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ikaros-labs/spall.git"
+  },
+  "homepage": "https://spall.nikmel.xyz",
   "bin": {
     "spall": "dist/cli.js"
   },
+  "exports": {
+    "./access": {
+      "types": "./dist/access.d.ts",
+      "default": "./dist/access.js"
+    }
+  },
+  "files": [
+    "dist",
+    "openapi.json"
+  ],
   "engines": {
     "node": ">=22"
   },
@@ -14,9 +31,12 @@
     "dev": "tsx src/cli.ts serve",
     "cli": "tsx src/cli.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "openapi": "tsx scripts/openapi.ts",
+    "prepare": "npm run build"
   },
   "dependencies": {
+    "@fastify/swagger": "^9.9.5",
     "chokidar": "^5.0.0",
     "fastify": "^5.12.5",
     "obsidian-bases-expression": "^0.2.0",
@@ -25,6 +45,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.3",
+    "esbuild": "^0.28.2",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.0.3"

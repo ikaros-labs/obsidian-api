@@ -1,7 +1,8 @@
 import { mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { compileConfig, ConfigError, parseConfigText } from '../src/config.js';
+import { compileConfig, parseConfigText } from '../src/config.js';
+import { ConfigError } from '../src/errors.js';
 import { FIXTURE, setup, type TestEnv } from './helpers.js';
 
 const STATS = {

@@ -1,4 +1,9 @@
-import { hasDotSegment, isPrefix, join, matchKeys, type Segs } from './paths.js';
+import { z } from 'zod';
+import { ConfigError } from './errors.js';
+import { hasDotSegment, isPrefix, join, matchKeys, parsePlainPath, type Segs } from './paths.js';
+
+export { ConfigError } from './errors.js';
+export { hasDotSegment, join, matchKeys, parsePlainPath, split, type Segs } from './paths.js';
 
 export const PERMS = ['read', 'create', 'update', 'delete', 'purge'] as const;
 export type Perm = (typeof PERMS)[number];
@@ -86,4 +91,102 @@ export class Access {
 
 export function expandLevel(level: Level | readonly Perm[]): Set<Perm> {
   return new Set(typeof level === 'string' ? LEVELS[level] : level);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Grants as written in the config. Used by config.ts and, through the `spall/access` export, by
+// anything that wants the exact same rules without a server (e.g. the landing-page playground).
+
+export const LevelSchema = z.union([z.enum(Object.keys(LEVELS) as [Level, ...Level[]]), z.array(z.enum(PERMS)).min(1)]);
+
+/** An account's `root` and `access` map, as in the YAML. */
+export const AccountAccessSchema = {
+  root: z.string().default(''),
+  access: z.record(z.string(), LevelSchema),
+};
+
+/** Parses a config path, recording a problem (prefixed with `where`) instead of throwing. */
+export function tryPath(p: string, where: string, problems: string[]): string[] | null {
+  try {
+    return parsePlainPath(p);
+  } catch (e) {
+    problems.push(`${where}: ${(e as Error).message}`);
+    return null;
+  }
+}
+
+/** Parses `vault.exclude`-style paths, recording problems as `where[i]`. */
+export function parseExclude(paths: string[], where: string, problems: string[]): string[][] {
+  const out: string[][] = [];
+  paths.forEach((p, i) => {
+    const segs = tryPath(p, `${where}[${i}]`, problems);
+    if (segs) out.push(segs);
+  });
+  return out;
+}
+
+export interface CompiledAccess {
+  root: string[];
+  access: Access;
+  /** Grants as written, for /me and the CLI. */
+  grants: { path: string; permissions: Perm[] }[];
+}
+
+/**
+ * Builds the access rules of one account. `exclude` is vault-relative. Problems (bad paths, two
+ * keys for one path, dotfile grants, update/delete without read) are pushed to `problems`, each
+ * prefixed with `where`; returns null only when the root itself is unusable.
+ */
+export function compileAccess(
+  spec: { root: string; access: Record<string, Level | readonly Perm[]> },
+  exclude: string[][],
+  where: string,
+  problems: string[],
+): CompiledAccess | null {
+  const root = tryPath(spec.root, `${where}.root`, problems);
+  if (!root) return null;
+  if (hasDotSegment(root)) problems.push(`${where}.root: dotfiles and dot-folders are always denied`);
+
+  const grants: Grant[] = [];
+  const seen = new Map<string, string>();
+  for (const [key, level] of Object.entries(spec.access)) {
+    const segs = tryPath(key, `${where}.access["${key}"]`, problems);
+    if (!segs) continue;
+    const match = matchKeys(segs).join('/');
+    const dup = seen.get(match);
+    if (dup !== undefined) problems.push(`${where}.access: "${key}" and "${dup}" are the same path`);
+    seen.set(match, key);
+    if (hasDotSegment(segs)) problems.push(`${where}.access["${key}"]: dotfiles and dot-folders are always denied`);
+    const perms = expandLevel(level);
+    const needsRead = (['update', 'delete', 'purge'] as const).filter((p) => perms.has(p));
+    if (needsRead.length > 0 && !perms.has('read')) {
+      problems.push(`${where}.access["${key}"]: ${needsRead.join(', ')} requires read`);
+    }
+    const vaultSegs = [...root, ...segs];
+    grants.push({ key: segs.length === 0 ? '.' : join(segs), segs: vaultSegs, match: matchKeys(vaultSegs), perms });
+  }
+  return {
+    root,
+    access: new Access(root, grants, exclude),
+    grants: grants.map((g) => ({ path: g.key, permissions: PERMS.filter((p) => g.perms.has(p)) })),
+  };
+}
+
+const AccessConfigSchema = z.strictObject({ ...AccountAccessSchema, exclude: z.array(z.string()).default([]) });
+
+/**
+ * The Access of one account from its config: `{ root, access }` as in the YAML, plus the vault's
+ * `exclude` list. Applies exactly the server's rules. Throws ConfigError listing every problem.
+ *
+ *     const a = accessFromConfig({ root: 'Notes', access: { '.': 'read', Private: 'none' } });
+ *     a.can(parsePlainPath('Notes/Ideas.md'), 'read'); // true
+ */
+export function accessFromConfig(input: { root?: string; access: Record<string, unknown>; exclude?: string[] }): Access {
+  const r = AccessConfigSchema.safeParse(input);
+  if (!r.success) throw new ConfigError(r.error.issues.map((i) => `${i.path.length ? i.path.join('.') : '(root)'}: ${i.message}`));
+  const problems: string[] = [];
+  const exclude = parseExclude(r.data.exclude, 'exclude', problems);
+  const compiled = compileAccess(r.data, exclude, 'account', problems);
+  if (problems.length > 0 || !compiled) throw new ConfigError(problems);
+  return compiled.access;
 }

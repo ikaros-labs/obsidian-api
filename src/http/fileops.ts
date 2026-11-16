@@ -117,7 +117,7 @@ export async function putFile(ctx: Ctx, segs: string[], data: Buffer, reply: Fas
   });
 }
 
-const DeleteQuery = z.object({ permanent: z.enum(['true', 'false']).optional() });
+export const DeleteQuery = z.object({ permanent: z.enum(['true', 'false']).optional() });
 
 export async function deleteFile(ctx: Ctx, segs: string[], reply: FastifyReply) {
   const q = parse(DeleteQuery, ctx.req.query, 'query');
@@ -139,7 +139,7 @@ export async function deleteFile(ctx: Ctx, segs: string[], reply: FastifyReply) 
   });
 }
 
-const MoveBody = z.strictObject({
+export const MoveBody = z.strictObject({
   destination: z.string().min(1),
   on_conflict: z.enum(['fail', 'rename']).default('fail'),
 });
