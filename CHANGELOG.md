@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0 — unreleased
+## 1.0.0 — 2026-11-16
 
 First public release. Formerly developed as `obsidian-api` (internally `vault-api`).
 
