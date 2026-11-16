@@ -1,0 +1,28 @@
+info:
+  name: Phrase and exclusion
+  type: http
+  seq: 4
+http:
+  method: GET
+  url: '{{baseUrl}}/v1/search?q="reading list" -bot&fields=path,score,matched'
+  params:
+  - name: q
+    value: '"reading list" -bot'
+    type: query
+  - name: fields
+    value: path,score,matched
+    type: query
+  auth: inherit
+runtime:
+  scripts:
+  - type: tests
+    code: |-
+      test("status is 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+docs: '`"…"` matches words in that order (stemmed, stopwords skipped, never across fields). `-word`, `-"phrase"` and `-prefix*` drop notes that match. A query that only excludes is a 400.'

@@ -8,6 +8,11 @@ import { Ctx, sendError, type Services } from './context.js';
 import { fileRoutes } from './files.js';
 import { folderRoutes } from './folders.js';
 import { noteRoutes } from './notes.js';
+import { searchRoutes } from './search.js';
+import { statsRoutes } from './stats.js';
+
+/** Longest accepted request URL (path plus query string). */
+const MAX_URL = 16 * 1024;
 
 /** Fixed-window rate limit per account. */
 class RateLimiter {
@@ -33,6 +38,14 @@ export function buildServer(s: Services, opts: { logger?: FastifyServerOptions['
     bodyLimit: s.config().server.maxBody,
     routerOptions: { maxParamLength: 10_000 },
     genReqId: () => randomUUID(),
+    // Requests Node can't even parse (e.g. raw non-ASCII bytes in the URL) get the usual envelope.
+    clientErrorHandler: (err, socket) => {
+      if (!socket.writable) return socket.destroy(err);
+      const body = JSON.stringify({ error: { code: 'invalid_request', message: 'Malformed HTTP request (percent-encode non-ASCII URLs)' } });
+      socket.end(
+        `HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
+      );
+    },
   });
   const limiter = new RateLimiter();
 
@@ -41,6 +54,7 @@ export function buildServer(s: Services, opts: { logger?: FastifyServerOptions['
   app.addContentTypeParser(['text/markdown', 'text/plain'], { parseAs: 'string' }, (_req, body, done) => done(null, body));
 
   app.addHook('onRequest', async (req) => {
+    if (req.url.length > MAX_URL) throw new ApiError(414, 'invalid_request', `URL is longer than ${MAX_URL} characters`);
     if (!req.url.startsWith('/v1/') && req.url.split('?')[0] !== '/v1') return;
     const m = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.authorization ?? '');
     if (!m) throw new ApiError(401, 'unauthorized', 'Missing bearer token');
@@ -91,6 +105,8 @@ export function buildServer(s: Services, opts: { logger?: FastifyServerOptions['
   noteRoutes(app, s);
   folderRoutes(app, s);
   baseRoutes(app, s);
+  searchRoutes(app, s);
+  statsRoutes(app, s);
   app.register(async (scope) => fileRoutes(scope, s));
 
   return app;

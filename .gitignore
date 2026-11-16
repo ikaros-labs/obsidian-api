@@ -3,3 +3,4 @@ dist/
 *.local.yaml
 .claude/
 obsidian-api.md
+out/

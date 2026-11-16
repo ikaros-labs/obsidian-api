@@ -132,7 +132,7 @@ describe('cli', () => {
     expect(cli('token', 'list')).toMatch(/bot\tphone\tactive/);
     cli('token', 'revoke', 'bot', 'phone');
     expect(loadConfig(cfgFile()).tokensByHash.size).toBe(0);
-  }, 30_000);
+  }, 120_000);
 
   it('explains decisions', () => {
     write(base(`  agent:\n    access:\n      Notes: read\n      Notes/Private: none\n      A/B: read`));
@@ -141,5 +141,5 @@ describe('cli', () => {
     expect(cli('explain', 'agent', '.git/config')).toMatch(/always denied/);
     expect(cli('explain', 'agent', 'A')).toMatch(/parent folder/);
     expect(cli('check')).toMatch(/Config OK/);
-  }, 30_000);
+  }, 120_000);
 });

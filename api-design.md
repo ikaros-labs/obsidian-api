@@ -18,7 +18,7 @@ A self-hosted REST server over a folder of markdown files (an Obsidian vault or 
 | Moving notes | Never rewrites links |
 | Access model | Grants on the folder tree: the most specific path wins. No globs |
 | Account management | A YAML config file plus a token CLI. No admin API |
-| v1 leaves out | Search and stats. Bases and query were added later (see *Bases*) |
+| v1 leaves out | Search and stats. Bases and query, then search and stats, were added later (see *Bases* and *Search and stats*) |
 
 ## Principles
 
@@ -43,6 +43,7 @@ A self-hosted REST server over a folder of markdown files (an Obsidian vault or 
   - `limit` defaults to 50, with a maximum of 500.
   - Cursors are opaque, and are bound to the account and the request parameters.
 - **`fields=`** is an optional list of the fields to return: `fields=path,frontmatter.status,modified`.
+- **Limits:** URLs over 16 KiB return 414. Path-like query parameters are capped at 1,024 characters, and `fields`/`cursor` at 512. Malformed HTTP (e.g. raw non-ASCII bytes in the URL) gets the same JSON error envelope. Unexpected errors never include messages or stack traces.
 - **Errors** use one envelope:
   ```json
   { "error": { "code": "rev_mismatch", "message": "…", "request_id": "…", "details": { "current_rev": "…" } } }
@@ -327,6 +328,8 @@ vault-api token revoke <account> <name>
 |---|---|
 | `GET` note, file, folder listing or count; tags | `read` (listings show parent folders on the way to a grant) |
 | `GET` base, base query | `read` on the `.base` file; rows only from readable notes |
+| `GET /v1/search`, `/v1/stats`, `/v1/stats/metrics` | `read` on (or a way to) `folder`; only readable notes are indexed, scored or counted |
+| `GET /v1/related` | `read` on the source note, plus the same as search for `folder` |
 | `POST /v1/query` | `read` on (or a way to) each `from` folder; rows only from readable notes |
 | `PUT` to a new path, `POST /notes`, `POST /folders/{path}` | `create` |
 | `PUT` over an existing file, `PATCH` | `update` |
@@ -342,7 +345,9 @@ vault-api token revoke <account> <name>
 | Save an article | `POST /v1/notes {title, frontmatter, body}` (the bot's root is the reading-list folder, so `folder` can be left out) |
 | Mark an article read | `PATCH /v1/notes/{path} {ops:[{op:"frontmatter.set", key:"status", value:"read"}]}` |
 | E-ink display | `GET /v1/notes/Dashboards/eink.md` with `If-None-Match`, so a poll with no changes is a cheap 304 |
-| Grafana | Not in v1 (see *Later*). Could use obsidian-grafana in the meantime |
+| Grafana | `GET /v1/stats?metric=modified&interval=day` through the Infinity datasource, or scrape `/v1/stats/metrics` with Prometheus |
+| Find a note | `GET /v1/search?q=…` |
+| Agent recall | `GET /v1/related?path=…` for notes on the same topic |
 | Agents | `GET /me` → folder listing → note (outline) → `PATCH` with `replace_text` and `if_match` |
 
 Once query exists, the reading-list bot can filter by `status == "to-read"` on the server. Until then it filters on the client side or keeps unread items in a subfolder.
@@ -480,7 +485,7 @@ Runs an unsaved view, with the same engine and the same response as a base query
   - Vault paths use wildcard routes (`/v1/notes/*`). The path is parsed from the raw `request.url` rather than from the decoded `params['*']`, so an encoded `%2F` inside a segment can be detected and rejected.
   - `find-my-way` only allows a wildcard at the end of a route, so `…/{path}/move` is handled by the `POST /v1/notes/*` handler, which strips the trailing `/move`. No other POST exists on that route, so the suffix can't be mistaken for part of a path.
   - `text/markdown` and `application/octet-stream` bodies are registered as raw buffer content-type parsers.
-- **In-memory index.** At startup the server scans the vault into an index (path, stat, frontmatter, tags, links). A filesystem watcher keeps it up to date, so changes made by sync, the Obsidian app or by hand show up without an API call. Listings, totals, tags and backlinks all come from the index. Note contents are read from disk on request.
+- **In-memory index.** At startup the server scans the vault into an index (path, stat, frontmatter, tags, links). A filesystem watcher keeps it up to date, so changes made by sync, the Obsidian app or by hand show up without an API call. Listings, totals, tags and backlinks all come from the index. Note contents are read from disk on request. The search index is the exception: it keeps every note body in memory (a few MB for 2,000 notes).
 - **Writes.**
   - New files are created with `O_EXCL`, which makes "create only if missing" atomic.
   - Existing files are overwritten **in place**. Writing a temp file and renaming it over the target would be atomic, but it gives the file a new inode, which resets the birth time that `created` comes from. The cost is that a reader could briefly see a half-written file.
@@ -488,10 +493,117 @@ Runs an unsaved view, with the same engine and the same response as a base query
   - Each path has its own mutex, so the `If-Match` check and the write happen as one step.
 - **Trash layout.** `.trash/` uses Obsidian's local layout: the original relative path, plus a numeric suffix if a file of that name is already there.
 
+## Search and stats
+
+Status: implemented.
+
+### `GET /v1/search?q=`
+Lexical full-text search, ranked with BM25.
+
+| Parameter | Meaning |
+|---|---|
+| `q` | Required, up to 500 characters. Syntax below |
+| `match` | `all` (default: every word must match) or `any` |
+| `folder` | Only notes under this folder, relative to the account root. Default: the root |
+| `limit`, `cursor`, `fields` | As everywhere else; `limit` defaults to 20, with a maximum of 100 |
+
+```json
+{ "query": "pcb laser", "total": 6,
+  "results": [{ "path": "inbox/making PCBs in-house.md", "name": "making PCBs in-house", "score": 14.703,
+                "matched": ["pcb", "laser"], "snippet": "…", "tags": [], "modified": "2026-10-09T…" }],
+  "next_cursor": "…", "has_more": true }
+```
+Query syntax:
+
+| Form | Meaning |
+|---|---|
+| `printer` | The word, after stemming (`printers`, `Printer` match too) |
+| `kicad*` | Prefix: terms that start with `kicad` or with its stem and occur in notes the account can read (at most 50, the most common in scope first) |
+| `"reading list"` | Phrase: the stems in this order, next to each other. Stopwords inside are skipped on both sides, and a phrase never spans two fields (title → tags → frontmatter → body). A hyphenated word (`pcb-плата`) is a phrase too |
+| `-draft`, `-"old stuff"`, `-tmp*` | Exclusion: notes that match are dropped. A query made only of exclusions is a 400 |
+
+Positive clauses are ANDed (`match=all`) or ORed (`match=any`). Exclusions apply either way. A query can have at most 32 clauses, of which at most 5 are prefixes; more is a 400.
+
+- **Index.** All notes are kept in memory: weighted term frequencies plus the body for snippets. It is built in the background at startup and synced lazily before each query: only notes whose `rev` changed are read again, so API writes and watcher events show up on the next search.
+- **Fields.** A word in the title (file name) counts 3×, in `tags` 2×, and in frontmatter *values* or the body 1×. Frontmatter keys aren't indexed.
+- **Tokenisation.** Unicode letter and digit runs, lowercased, NFC, `ё` folded to `е`. Short English and Russian stopwords and single letters are dropped. Cyrillic words go through the Snowball Russian stemmer, and Latin words through a light English one (plural, `-ing`, `-ed`). The query uses the same pipeline, so `принтеры` finds `принтер`.
+- **Prefix queries** help where Snowball cuts related words differently (печать → `печа`, печатать → `печата`): `печа*` covers both.
+- **Phrases** are checked against each note's stored term sequence, after a cheap check that every term is present.
+- **Scoping.** Hidden notes are filtered out *before* scoring. N, document frequencies and the average length all come from the notes the account can read, so a hidden note can't affect a score, which would otherwise leak its words.
+- **Prefix expansion is scoped too:** expansions are picked among the terms of readable notes, so hidden notes can't crowd out visible terms or reveal which prefixes they contain.
+- **Statistics cache.** Those per-account statistics are cached per (account, `folder`, index version): the set of visible notes, their average length, and document frequencies filled in per term as queries need them. Any change to the vault bumps the version and invalidates the cache. A config reload creates new account objects, so changed grants take effect at once. On the 1.8k-note snapshot, a query that misses the cache takes ~115 ms and one that hits takes ~20–30 ms (on a busy machine).
+- **Snippet.** The first non-heading line that contains a matched term, cut to 160 characters around the match. Snippets are built only for the returned page.
+- **Not yet supported:** fuzzy matching, field filters (`tag:`), and `mode=semantic|hybrid`.
+
+### `GET /v1/related?path=`
+More like this: the notes most similar to one note, for agents recalling "what else have I written about this?"
+
+| Parameter | Meaning |
+|---|---|
+| `path` | The source note, relative to the account root (`.md` optional). 404 unless the account can read it |
+| `terms` | How many terms to build the query from: 1–100, default 25 |
+| `folder`, `limit` (default 10, max 100), `cursor`, `fields` | As for search |
+
+```json
+{ "path": "inbox/making PCBs in-house.md",
+  "terms": ["laser", "lhs", "pcb", "etch", "solder", "copper", "board", …],
+  "total": 145,
+  "results": [{ "path": "inbox/PCB with CNC + laser (Alvaro's Workshop).md", "score": 82.5, "matched": [...], "snippet": "…", … }],
+  "next_cursor": "…", "has_more": true }
+```
+- **Term choice.** The source's terms are ranked by weighted tf × idf over the notes the account can read. Terms that no other visible note has are skipped, and so are numbers, terms shorter than 3 characters, and URL fragments (`www`, `https`, `com`, …).
+- **Scoring.** The top terms run as an OR query with the same BM25 and the same cached statistics as search. The source note itself is never returned.
+- **Scoping.** Both the term statistics and the candidates come from readable notes only, under `folder` if one is given.
+
+### `GET /v1/stats`
+Notes created and modified per bucket, and named counters for dashboards.
+
+| Parameter | Meaning |
+|---|---|
+| `interval` | `day` (default), `week` (starting Monday) or `month` |
+| `from`, `to` | Calendar dates (YYYY-MM-DD), inclusive. Default: the last 30 days, 12 weeks or 12 months up to today |
+| `tz` | IANA time zone for dates and buckets. Defaults to `stats.timezone` (UTC) |
+| `folder` | Only notes under this folder (relative to the account root) |
+| `metric` | `created` or `modified`: return only that series as `{ buckets }`, for the Grafana Infinity datasource |
+
+```json
+{ "folder": "", "notes": 1792, "interval": "day", "from": "2026-09-13", "to": "2026-10-12", "timezone": "Europe/London",
+  "created": [{ "t": "2026-09-13", "count": 0 }, …], "modified": [{ "t": "2026-09-13", "count": 4 }, …],
+  "folders": { "x_inbox": { "path": "3. Resources/X/inbox", "notes": 179 } },
+  "properties": { "reading": { "path": "datasources/Reading List", "property": "Status",
+                               "counts": { "Done": 177, "Reviewed": 46, "Not started": 32, "Cancelled": 6, "In progress": 2 } } } }
+```
+- Every bucket in the window is present, so charts have no gaps. A window can have at most 5,000 buckets.
+- `created` is the filesystem birth time, as everywhere else. It's only meaningful when the files have kept their inodes: on a fresh copy or clone, every note is "created" on the day of the copy.
+- **Counters** come from the config and are server-wide:
+  ```yaml
+  stats:
+    timezone: Europe/London
+    folders:                  # notes under each folder, recursively
+      inbox: inbox
+      x_inbox: 3. Resources/X/inbox
+    properties:               # notes per value of a frontmatter property
+      reading: { folder: datasources/Reading List, property: Status }
+  ```
+  Paths are vault-relative. Counter names are lowercase identifiers, because they become metric labels. A list value counts once for each distinct item, and a missing value counts as `(none)`. The exact property name is matched first, then a case-insensitive one.
+- **Scoping.** Only readable notes are counted. A counter whose folder the account can neither read nor pass through (see *Ancestor visibility*), or that lies outside its root, is left out, so the account can't even learn that it exists.
+
+### `GET /v1/stats/metrics`
+The same data in the Prometheus text format (`text/plain; version=0.0.4`), for a scrape job with `authorization: { credentials: vlt_… }`:
+```
+vault_notes 1792
+vault_notes_created{window="24h"} 3          # also 7d, 30d
+vault_notes_modified{window="24h"} 3
+vault_last_modified_timestamp_seconds 1791750633
+vault_folder_notes{counter="x_inbox",path="3. Resources/X/inbox"} 179
+vault_property_notes{counter="reading",property="Status",value="Not started"} 32
+```
+It takes `folder` too. The values are gauges, recomputed from the index on every scrape, which takes a few milliseconds on a vault of 2,000 notes.
+
 ## Later
 - **Bases:** `GET /v1/bases` listing, `summaries`, and creating notes through a view (see *Bases*).
-- **Search:** `GET /v1/search?q=` using lexical BM25 first, with `mode=semantic|hybrid` added later.
-- **Stats (for Grafana):** `GET /v1/stats?metric=created|modified&interval=day|week|month&from=&to=&folder=` → `{ "buckets": [{ "t": "2026-09-01", "count": 5 }] }`, in a format the Grafana Infinity datasource reads directly. Counts only notes the account can see.
+- **Search:** `mode=semantic|hybrid`, fuzzy matching, field filters.
+- **Stats:** `created` from a frontmatter property (e.g. `created:`), for vaults whose birth times were lost in a copy.
 - **Changes feed:** `GET /v1/changes?since=&wait=` (long-poll), built on the same filesystem watcher.
 - **Rewriting links when a note moves.**
 - **Globs or a `types:` filter in access grants**, if a use case comes up.
