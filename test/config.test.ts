@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ConfigError, ConfigManager, loadConfig } from '../src/config.js';
+import { ConfigManager, loadConfig } from '../src/config.js';
+import { ConfigError } from '../src/errors.js';
 import { hashToken } from '../src/tokens.js';
 
 let dir: string;

@@ -2,7 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { ApiError, invalidRequest } from '../errors.js';
 import { revOf } from '../vault-index.js';
 import { Ctx, etag, header, parseEtagList, type Services } from './context.js';
-import { deleteFile, moveFile, putFile, stripMove } from './fileops.js';
+import { DeleteQuery, deleteFile, MoveBody, moveFile, putFile, stripMove } from './fileops.js';
+import { doc } from './openapi.js';
 
 const PREFIX = '/v1/files/';
 
@@ -59,7 +60,7 @@ export async function fileRoutes(app: FastifyInstance, s: Services) {
     return segs;
   };
 
-  app.get('/v1/files/*', async (req, reply) => {
+  app.get('/v1/files/*', { schema: doc({ summary: 'Download any file (supports Range and If-None-Match)', tag: 'Files', url: '/v1/files/{path}' }) }, async (req, reply) => {
     const ctx = new Ctx(req, s);
     const real = await ctx.resolve(filePath(ctx), 'read');
     if ((await s.vault.kindOf(real)) !== 'file') throw new ApiError(404, 'not_found', 'Not found');
@@ -91,18 +92,18 @@ export async function fileRoutes(app: FastifyInstance, s: Services) {
     return reply.send(buf);
   });
 
-  app.put('/v1/files/*', async (req, reply) => {
+  app.put('/v1/files/*', { schema: doc({ summary: 'Upload or replace a file (raw bytes)', tag: 'Files', url: '/v1/files/{path}', body: { content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary' } } } } }) }, async (req, reply) => {
     const ctx = new Ctx(req, s);
     const data = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
     return putFile(ctx, filePath(ctx), data, reply, { note: false });
   });
 
-  app.delete('/v1/files/*', async (req, reply) => {
+  app.delete('/v1/files/*', { schema: doc({ summary: 'Move a file to the trash, or delete it with permanent=true', tag: 'Files', url: '/v1/files/{path}', query: DeleteQuery }) }, async (req, reply) => {
     const ctx = new Ctx(req, s);
     return deleteFile(ctx, filePath(ctx), reply);
   });
 
-  app.post('/v1/files/*', async (req) => {
+  app.post('/v1/files/*', { schema: doc({ summary: 'Move or rename a file', tag: 'Files', url: '/v1/files/{path}/move', body: MoveBody }) }, async (req) => {
     const ctx = new Ctx(req, s);
     const segs = stripMove(ctx.urlPath(PREFIX), ctx.account.root.length);
     let body: unknown;

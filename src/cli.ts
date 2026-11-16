@@ -5,7 +5,8 @@ import { parseArgs } from 'node:util';
 import { isSeq, parseDocument } from 'yaml';
 import { PERMS } from './access.js';
 import { createApp } from './app.js';
-import { ConfigError, ConfigManager, compileConfig, loadConfig, parseConfigText, type Config } from './config.js';
+import { ConfigManager, compileConfig, loadConfig, parseConfigText, type Config } from './config.js';
+import { ConfigError } from './errors.js';
 import { join, parsePlainPath } from './paths.js';
 import { expiryTime, generateToken, hashToken, isExpired } from './tokens.js';
 

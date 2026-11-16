@@ -8,6 +8,7 @@ import { splitFrontmatter } from '../markdown.js';
 import { isPrefix, join, parsePlainPath } from '../paths.js';
 import { revOf, type Entry } from '../vault-index.js';
 import { Ctx, etag, parse, type Services } from './context.js';
+import { doc } from './openapi.js';
 import { cursorKey, page, sample } from './paging.js';
 
 const PREFIX = '/v1/bases/';
@@ -149,7 +150,7 @@ async function respond(
 }
 
 export function baseRoutes(app: FastifyInstance, s: Services) {
-  app.get('/v1/bases/*', async (req, reply) => {
+  app.get('/v1/bases/*', { schema: doc({ summary: 'Read a .base definition', tag: 'Bases', url: '/v1/bases/{path}' }) }, async (req, reply) => {
     const ctx = new Ctx(req, s);
     const { real, base, rev } = await readBase(ctx, withBaseExtension(ctx.urlPath(PREFIX)));
     reply.header('etag', etag(rev));
@@ -172,7 +173,7 @@ export function baseRoutes(app: FastifyInstance, s: Services) {
     };
   });
 
-  app.post('/v1/bases/*', async (req) => {
+  app.post('/v1/bases/*', { schema: doc({ summary: 'Evaluate a view of a .base file', tag: 'Bases', url: '/v1/bases/{path}/query', body: BaseQueryBody }) }, async (req) => {
     const ctx = new Ctx(req, s);
     const raw = ctx.urlPath(PREFIX);
     if (raw.length <= ctx.account.root.length + 1 || raw.at(-1) !== 'query') throw new ApiError(404, 'not_found', 'No such endpoint');
@@ -215,7 +216,7 @@ export function baseRoutes(app: FastifyInstance, s: Services) {
     });
   });
 
-  app.post('/v1/query', async (req) => {
+  app.post('/v1/query', { schema: doc({ summary: 'Evaluate an ad-hoc Bases query', tag: 'Bases', body: AdhocQueryBody }) }, async (req) => {
     const ctx = new Ctx(req, s);
     const body = parse(AdhocQueryBody, req.body ?? {});
     checkRequestFilter(body.filters);

@@ -30,3 +30,10 @@ export const forbidden = (what: string) => new ApiError(403, 'forbidden', `This 
 export const invalidRequest = (message: string, details?: Record<string, unknown>) =>
   new ApiError(400, 'invalid_request', message, details);
 export const alreadyExists = (path: string) => new ApiError(409, 'already_exists', `Already exists: ${path}`);
+
+/** A config (or access spec) that doesn't validate; `problems` lists every issue found. */
+export class ConfigError extends Error {
+  constructor(readonly problems: string[]) {
+    super(`Invalid config:\n${problems.map((p) => `  - ${p}`).join('\n')}`);
+  }
+}

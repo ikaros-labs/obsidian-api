@@ -7,6 +7,7 @@ import { buckets, countByProperty, dateIn, defaultFrom, prometheusText, type Met
 import type { Entry } from '../vault-index.js';
 import { Ctx, parse, type Services } from './context.js';
 import { listableFolder } from './folders.js';
+import { doc } from './openapi.js';
 
 /** A real calendar date: 2026-02-30 and 2026-13-45 are rejected, not rolled over. */
 const DATE = z
@@ -64,7 +65,7 @@ function counters(ctx: Ctx) {
 const folderOf = (ctx: Ctx, folder: string) => listableFolder(ctx, ctx.toVault(parsePlainPath(folder)));
 
 export function statsRoutes(app: FastifyInstance, s: Services) {
-  app.get('/v1/stats', async (req) => {
+  app.get('/v1/stats', { schema: doc({ summary: 'Note counts and created/modified series over readable notes', tag: 'Stats', query: StatsQuery }) }, async (req) => {
     const ctx = new Ctx(req, s);
     const q = parse(StatsQuery, req.query, 'query');
     const tz = q.tz ?? s.config().stats.timezone;
@@ -97,7 +98,7 @@ export function statsRoutes(app: FastifyInstance, s: Services) {
     };
   });
 
-  app.get('/v1/stats/metrics', async (req, reply) => {
+  app.get('/v1/stats/metrics', { schema: doc({ summary: 'The same numbers in the Prometheus text format', tag: 'Stats', query: MetricsQuery }) }, async (req, reply) => {
     const ctx = new Ctx(req, s);
     const q = parse(MetricsQuery, req.query, 'query');
     const folder = await folderOf(ctx, q.folder);
