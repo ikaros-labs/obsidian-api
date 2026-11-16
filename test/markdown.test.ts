@@ -16,7 +16,7 @@ describe('markdown', () => {
 
   it('extracts tags from frontmatter and body, skipping code', () => {
     const meta = analyzeNote(plan);
-    expect(meta.frontmatter).toEqual({ project: 'vault-api', tags: ['research'] });
+    expect(meta.frontmatter).toEqual({ project: 'spall', tags: ['research'] });
     expect(meta.tags).toEqual(['research']);
     expect(analyzeNote('---\ntags: a, b\n---\n#c and #d/e but not #123 or `#code`').tags).toEqual(['a', 'b', 'c', 'd/e']);
   });

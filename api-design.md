@@ -1,4 +1,4 @@
-# Vault API: proposal v1
+# Spall: proposal v1
 
 Status: final proposal, 1 Oct 2026. For the idea and the prior-art research, see [[obsidian-api]].
 
@@ -32,7 +32,7 @@ A self-hosted REST server over a folder of markdown files (an Obsidian vault or 
 
 ## Conventions
 
-- **Base URL and auth.** All endpoints live under `/v1` and require `Authorization: Bearer vlt_…`.
+- **Base URL and auth.** All endpoints live under `/v1` and require `Authorization: Bearer spl_…`.
 - **Paths** are relative to the account's root, and each segment is percent-encoded: `/v1/notes/Research/Some%20note.md`. The `.md` can be left off for notes.
 - **`rev`** is a truncated content hash (`sha256:9f2c…`), sent both as a JSON field and as the `ETag` header.
   - `If-Match: <rev>` on a write returns **412 `rev_mismatch`** if the file has changed.
@@ -250,7 +250,7 @@ Matching is done on each segment separately and ignores case. Before matching, p
 ## Config
 
 ```yaml
-# vault-api.yaml — must live OUTSIDE the vault (the server refuses to start otherwise)
+# spall.yaml — must live OUTSIDE the vault (the server refuses to start otherwise)
 version: 1
 
 server:
@@ -267,7 +267,7 @@ vault:
     - Templates
 
 audit:
-  path: /var/lib/vault-api/audit.jsonl   # one line per write: time, account, token, op, path, old/new rev
+  path: /var/lib/spall/audit.jsonl   # one line per write: time, account, token, op, path, old/new rev
 
 defaults:
   rate_limit: 120/min
@@ -305,19 +305,19 @@ accounts:
 - **Strict validation.** A zod schema rejects unknown keys and wrong types at startup. The same schema is exported as JSON Schema, so your editor can autocomplete the config.
 - **Hot reload.** The config reloads when the file changes or on SIGHUP. If the new version is invalid, the server keeps the old one and logs the error.
 - **Tokens.**
-  - Tokens look like `vlt_` + 43 base64url characters (256 random bits). The prefix lets secret scanners spot a leaked token.
+  - Tokens look like `spl_` + 43 base64url characters (256 random bits). The prefix lets secret scanners spot a leaked token.
   - The config stores only a SHA-256 hash of each token. Because the tokens are high-entropy, a slow hash like bcrypt isn't needed.
   - An account can have several tokens, so you can rotate one without downtime.
   - Expired tokens return 401. A date-only `expires` (e.g. `2027-10-01`) takes effect at 00:00 UTC on that day.
 
 ### CLI
 ```
-vault-api serve [--config path]
-vault-api check                         # validate the config, print the expanded grants of each account
-vault-api explain <account> <path>      # e.g. Notes/Private/x.md → none (key: Notes/Private)
-vault-api token create <account> [--name n] [--expires 2027-10-01]   # prints the token once, writes its hash and keeps YAML comments
-vault-api token list [account]
-vault-api token revoke <account> <name>
+spall serve [--config path]
+spall check                         # validate the config, print the expanded grants of each account
+spall explain <account> <path>      # e.g. Notes/Private/x.md → none (key: Notes/Private)
+spall token create <account> [--name n] [--expires 2027-10-01]   # prints the token once, writes its hash and keeps YAML comments
+spall token list [account]
+spall token revoke <account> <name>
 ```
 
 ---
@@ -589,7 +589,7 @@ Notes created and modified per bucket, and named counters for dashboards.
 - **Scoping.** Only readable notes are counted. A counter whose folder the account can neither read nor pass through (see *Ancestor visibility*), or that lies outside its root, is left out, so the account can't even learn that it exists.
 
 ### `GET /v1/stats/metrics`
-The same data in the Prometheus text format (`text/plain; version=0.0.4`), for a scrape job with `authorization: { credentials: vlt_… }`:
+The same data in the Prometheus text format (`text/plain; version=0.0.4`), for a scrape job with `authorization: { credentials: spl_… }`:
 ```
 vault_notes 1792
 vault_notes_created{window="24h"} 3          # also 7d, 30d

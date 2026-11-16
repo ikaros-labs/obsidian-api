@@ -1,6 +1,6 @@
 opencollection: 1.0.0
 info:
-  name: vault-api
+  name: spall
 request:
   auth:
     type: bearer

@@ -9,7 +9,7 @@ import { ConfigError, ConfigManager, compileConfig, loadConfig, parseConfigText,
 import { join, parsePlainPath } from './paths.js';
 import { expiryTime, generateToken, hashToken, isExpired } from './tokens.js';
 
-const USAGE = `Usage: vault-api <command> [options]
+const USAGE = `Usage: spall <command> [options]
 
 Commands:
   serve                                 Start the server
@@ -20,7 +20,7 @@ Commands:
   token revoke <account> <name>
 
 Options:
-  -c, --config <path>   Config file (default: $VAULT_API_CONFIG or ./vault-api.yaml)
+  -c, --config <path>   Config file (default: $SPALL_CONFIG or ./spall.yaml)
 `;
 
 function fail(message: string): never {
@@ -129,7 +129,7 @@ async function main() {
     console.log(USAGE);
     return;
   }
-  const configPath = path.resolve(values.config ?? process.env.VAULT_API_CONFIG ?? 'vault-api.yaml');
+  const configPath = path.resolve(values.config ?? process.env.SPALL_CONFIG ?? 'spall.yaml');
 
   switch (cmd) {
     case 'serve':

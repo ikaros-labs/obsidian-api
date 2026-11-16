@@ -1,9 +1,9 @@
 # Example deployment. Copy this folder next to your vault, then:
-#   docker compose run --rm vault-api token create reading-bot --name hermes
+#   docker compose run --rm spall token create reading-bot --name hermes
 #   docker compose up -d
 services:
-  vault-api:
-    image: ghcr.io/ikaros-labs/obsidian-api:latest
+  spall:
+    image: ghcr.io/ikaros-labs/spall:latest
     restart: unless-stopped
     # Run as the user that owns the vault files, so writes keep the right owner.
     # With rootless Docker use "0:0": container root maps to your own user.

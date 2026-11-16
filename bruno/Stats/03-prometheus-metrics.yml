@@ -23,4 +23,4 @@ settings:
   followRedirects: true
   maxRedirects: 5
 docs: 'Prometheus text format: `vault_notes`, `vault_notes_created{window}`, `vault_notes_modified{window}`, `vault_last_modified_timestamp_seconds`, `vault_folder_notes{counter,path}` and `vault_property_notes{counter,property,value}`.
-  Scrape it with `authorization: { credentials: vlt_… }`.'
+  Scrape it with `authorization: { credentials: spl_… }`.'

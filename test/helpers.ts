@@ -77,13 +77,13 @@ export async function setup(
     prepare?: (vault: string) => void;
   } = {},
 ): Promise<TestEnv> {
-  const dir = mkdtempSync(path.join(tmpdir(), 'vault-api-test-'));
+  const dir = mkdtempSync(path.join(tmpdir(), 'spall-test-'));
   const vault = path.join(dir, 'vault');
   cpSync(opts.fixture ?? FIXTURE, vault, { recursive: true });
   mkdirSync(path.join(vault, '.git'));
   writeFileSync(path.join(vault, '.git/config'), '[core]\n');
   opts.prepare?.(vault);
-  const configPath = path.join(dir, 'vault-api.yaml');
+  const configPath = path.join(dir, 'spall.yaml');
   const auditPath = path.join(dir, 'audit.jsonl');
   writeConfig(configPath, vault, { vault: opts.vault, audit: auditPath, accounts: opts.accounts, stats: opts.stats });
   const configs = ConfigManager.load(configPath, { info() {}, error() {} });
