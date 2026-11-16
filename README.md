@@ -1,6 +1,16 @@
-# Spall
+<p align="center">
+  <img src="assets/logo.svg" width="96" height="96" alt="Spall logo">
+</p>
 
-**A scoped REST API for your Obsidian vault: give every bot, script or agent its own spall of it.**
+<h1 align="center">Spall</h1>
+
+<p align="center">A scoped REST API for your Obsidian vault: give every bot, script or agent its own spall of it.</p>
+
+<p align="center">
+  <a href="https://spall.nikmel.xyz">Website &amp; playground</a> ·
+  <a href="#quickstart-60-seconds">Quickstart</a> ·
+  <a href="https://github.com/ikaros-labs/spall/releases">Releases</a>
+</p>
 
 A spall is a flake struck off a stone, and obsidian is the classic stone for knapping. Spall serves a folder of markdown files over HTTP. Each account gets exactly the folders and permissions you grant it, and nothing else.
 

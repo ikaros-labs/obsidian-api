@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Spall">
+  <rect width="128" height="128" rx="28" fill="#0B0B0D"/>
+  <rect x="0.5" y="0.5" width="127" height="127" rx="27.5" fill="none" stroke="#26262D"/>
+  <g transform="translate(22.4 22.4) scale(3.2)">
+    <polygon points="3,9 12,2 23,6 21,18 10,24 4,18" fill="#ECEAE6"/>
+    <polygon points="12,2 23,6 18,10" fill="#FF7A3D"/>
+  </g>
+</svg>
