@@ -591,12 +591,12 @@ Notes created and modified per bucket, and named counters for dashboards.
 ### `GET /v1/stats/metrics`
 The same data in the Prometheus text format (`text/plain; version=0.0.4`), for a scrape job with `authorization: { credentials: spl_… }`:
 ```
-vault_notes 1792
-vault_notes_created{window="24h"} 3          # also 7d, 30d
-vault_notes_modified{window="24h"} 3
-vault_last_modified_timestamp_seconds 1791750633
-vault_folder_notes{counter="x_inbox",path="3. Resources/X/inbox"} 179
-vault_property_notes{counter="reading",property="Status",value="Not started"} 32
+spall_notes 1792
+spall_notes_created{window="24h"} 3          # also 7d, 30d
+spall_notes_modified{window="24h"} 3
+spall_last_modified_timestamp_seconds 1791750633
+spall_folder_notes{counter="x_inbox",path="3. Resources/X/inbox"} 179
+spall_property_notes{counter="reading",property="Status",value="Not started"} 32
 ```
 It takes `folder` too. The values are gauges, recomputed from the index on every scrape, which takes a few milliseconds on a vault of 2,000 notes.
 

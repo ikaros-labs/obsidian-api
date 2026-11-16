@@ -1927,6 +1927,7 @@
         "tags": [
           "Stats"
         ],
+        "description": "Gauges: `spall_notes`, `spall_notes_created{window}` and `spall_notes_modified{window}` (24h, 7d, 30d), `spall_last_modified_timestamp_seconds`, `spall_folder_notes{counter,path}`, `spall_property_notes{counter,property,value}`.",
         "parameters": [
           {
             "schema": {

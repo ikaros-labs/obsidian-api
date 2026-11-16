@@ -22,5 +22,5 @@ settings:
   timeout: 0
   followRedirects: true
   maxRedirects: 5
-docs: 'Prometheus text format: `vault_notes`, `vault_notes_created{window}`, `vault_notes_modified{window}`, `vault_last_modified_timestamp_seconds`, `vault_folder_notes{counter,path}` and `vault_property_notes{counter,property,value}`.
+docs: 'Prometheus text format: `spall_notes`, `spall_notes_created{window}`, `spall_notes_modified{window}`, `spall_last_modified_timestamp_seconds`, `spall_folder_notes{counter,path}` and `spall_property_notes{counter,property,value}`.
   Scrape it with `authorization: { credentials: spl_… }`.'

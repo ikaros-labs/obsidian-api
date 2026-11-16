@@ -98,7 +98,13 @@ export function statsRoutes(app: FastifyInstance, s: Services) {
     };
   });
 
-  app.get('/v1/stats/metrics', { schema: doc({ summary: 'The same numbers in the Prometheus text format', tag: 'Stats', query: MetricsQuery }) }, async (req, reply) => {
+  app.get('/v1/stats/metrics', { schema: doc({
+        summary: 'The same numbers in the Prometheus text format',
+        description:
+          'Gauges: `spall_notes`, `spall_notes_created{window}` and `spall_notes_modified{window}` (24h, 7d, 30d), `spall_last_modified_timestamp_seconds`, `spall_folder_notes{counter,path}`, `spall_property_notes{counter,property,value}`.',
+        tag: 'Stats',
+        query: MetricsQuery,
+      }) }, async (req, reply) => {
     const ctx = new Ctx(req, s);
     const q = parse(MetricsQuery, req.query, 'query');
     const folder = await folderOf(ctx, q.folder);
@@ -109,28 +115,28 @@ export function statsRoutes(app: FastifyInstance, s: Services) {
       Object.entries(windows).map(([w, ms]) => ({ labels: { window: w }, value: notes.filter((e) => now - e[metric] <= ms).length }));
     const { folders, properties } = counters(ctx);
     const metrics: Metric[] = [
-      { name: 'vault_notes', help: 'Notes the account can read.', type: 'gauge', samples: [{ value: notes.length }] },
+      { name: 'spall_notes', help: 'Notes the account can read.', type: 'gauge', samples: [{ value: notes.length }] },
       {
-        name: 'vault_notes_created',
+        name: 'spall_notes_created',
         help: 'Notes created within the window (filesystem birth time).',
         type: 'gauge',
         samples: within('created'),
       },
-      { name: 'vault_notes_modified', help: 'Notes modified within the window.', type: 'gauge', samples: within('modified') },
+      { name: 'spall_notes_modified', help: 'Notes modified within the window.', type: 'gauge', samples: within('modified') },
       {
-        name: 'vault_last_modified_timestamp_seconds',
+        name: 'spall_last_modified_timestamp_seconds',
         help: 'Modification time of the most recently changed note.',
         type: 'gauge',
         samples: notes.length ? [{ value: Math.floor(notes.reduce((m, e) => Math.max(m, e.modified), 0) / 1000) }] : [],
       },
       {
-        name: 'vault_folder_notes',
+        name: 'spall_folder_notes',
         help: 'Notes in each configured folder counter (stats.folders).',
         type: 'gauge',
         samples: Object.entries(folders).map(([name, c]) => ({ labels: { counter: name, path: c.path }, value: c.notes })),
       },
       {
-        name: 'vault_property_notes',
+        name: 'spall_property_notes',
         help: 'Notes per property value in each configured property counter (stats.properties).',
         type: 'gauge',
         samples: Object.entries(properties).flatMap(([name, c]) =>
