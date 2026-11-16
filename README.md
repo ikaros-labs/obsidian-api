@@ -4,8 +4,6 @@
 
 A spall is a flake struck off a stone, and obsidian is the classic stone for knapping. Spall serves a folder of markdown files over HTTP. Each account gets exactly the folders and permissions you grant it, and nothing else.
 
-Landing page and playground: **https://spall.nikmel.xyz**
-
 ## Why
 
 Most ways of reaching a vault from code give out **one key to the whole vault**. That's fine for your own laptop. It's not fine for a Telegram bot that only files links, an e-ink screen that shows one note, or an LLM agent that should see your projects but never your journal.
