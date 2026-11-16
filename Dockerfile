@@ -19,7 +19,7 @@ RUN npm ci --omit=dev --ignore-scripts
 FROM node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production \
-    VAULT_API_CONFIG=/config/vault-api.yaml
+    SPALL_CONFIG=/config/spall.yaml
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./

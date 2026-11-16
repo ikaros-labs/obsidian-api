@@ -72,7 +72,7 @@ describe('GET note', () => {
       path: 'Research/Plan.md',
       name: 'Plan',
       rev: expect.stringMatching(/^sha256:/),
-      frontmatter: { project: 'vault-api', tags: ['research'] },
+      frontmatter: { project: 'spall', tags: ['research'] },
       tags: ['research'],
     });
     expect(body.body.startsWith('# Plan')).toBe(true);
@@ -93,7 +93,7 @@ describe('GET note', () => {
 
   it('supports fields= and the outline format', async () => {
     const f = await env.req('agent', { method: 'GET', url: `${note('Research/Plan')}?fields=path,frontmatter.project`, headers: { accept: 'application/json' } });
-    expect(f.json()).toEqual({ path: 'Research/Plan.md', frontmatter: { project: 'vault-api' } });
+    expect(f.json()).toEqual({ path: 'Research/Plan.md', frontmatter: { project: 'spall' } });
     const o = await env.req('agent', { method: 'GET', url: note('Research/Plan'), headers: { accept: 'application/vnd.vault.outline+json' } });
     expect(o.json()).toMatchObject({ path: 'Research/Plan.md', blocks: [{ id: 'task1' }, { id: 'para' }], frontmatter_keys: ['project', 'tags'] });
   });

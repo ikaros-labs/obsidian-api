@@ -152,13 +152,13 @@ describe('GET /v1/stats/metrics', () => {
 describe('stats config', () => {
   const base = `version: 1\nvault:\n  path: ${FIXTURE}\n`;
   it('defaults to UTC and no counters', () => {
-    const cfg = compileConfig(parseConfigText(base), '/tmp/x/vault-api.yaml');
+    const cfg = compileConfig(parseConfigText(base), '/tmp/x/spall.yaml');
     expect(cfg.stats).toEqual({ timezone: 'UTC', folders: [], properties: [] });
   });
 
   it('rejects bad names, paths and time zones', () => {
     expect(() => parseConfigText(`${base}stats:\n  folders:\n    X-Inbox: inbox\n`)).toThrow(ConfigError);
-    expect(() => compileConfig(parseConfigText(`${base}stats:\n  timezone: Mars/Olympus\n`), '/tmp/x/vault-api.yaml')).toThrow(/time zone/);
-    expect(() => compileConfig(parseConfigText(`${base}stats:\n  folders:\n    up: ../outside\n`), '/tmp/x/vault-api.yaml')).toThrow(ConfigError);
+    expect(() => compileConfig(parseConfigText(`${base}stats:\n  timezone: Mars/Olympus\n`), '/tmp/x/spall.yaml')).toThrow(/time zone/);
+    expect(() => compileConfig(parseConfigText(`${base}stats:\n  folders:\n    up: ../outside\n`), '/tmp/x/spall.yaml')).toThrow(ConfigError);
   });
 });

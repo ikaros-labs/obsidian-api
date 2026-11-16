@@ -8,7 +8,7 @@ import { hashToken } from '../src/tokens.js';
 
 let dir: string;
 let vault: string;
-const cfgFile = () => path.join(dir, 'vault-api.yaml');
+const cfgFile = () => path.join(dir, 'spall.yaml');
 const write = (yaml: string) => writeFileSync(cfgFile(), yaml);
 const problems = (fn: () => unknown): string[] => {
   try {
@@ -21,7 +21,7 @@ const problems = (fn: () => unknown): string[] => {
 };
 
 beforeEach(() => {
-  dir = mkdtempSync(path.join(tmpdir(), 'vault-api-cfg-'));
+  dir = mkdtempSync(path.join(tmpdir(), 'spall-cfg-'));
   vault = path.join(dir, 'vault');
   mkdirSync(vault);
 });
@@ -80,7 +80,7 @@ describe('config', () => {
   });
 
   it('refuses a config inside the vault', () => {
-    const inside = path.join(vault, 'vault-api.yaml');
+    const inside = path.join(vault, 'spall.yaml');
     writeFileSync(inside, 'version: 1\nvault:\n  path: .\n');
     expect(problems(() => loadConfig(inside)).join()).toMatch(/outside the vault/);
   });
@@ -120,7 +120,7 @@ describe('cli', () => {
   it('creates and revokes tokens, keeping comments', () => {
     write(`# my config\nversion: 1\nvault:\n  path: ./vault # the vault\naccounts:\n  bot:\n    access: { .: read } # read only\n`);
     const token = cli('token', 'create', 'bot', '--name', 'phone', '--expires', '2030-01-01').trim();
-    expect(token).toMatch(/^vlt_[A-Za-z0-9_-]{43}$/);
+    expect(token).toMatch(/^spl_[A-Za-z0-9_-]{43}$/);
     const text = readFileSync(cfgFile(), 'utf8');
     expect(text).toContain('# my config');
     expect(text).toContain('# the vault');

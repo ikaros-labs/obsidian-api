@@ -1,10 +1,10 @@
 /**
- * Writes a local demo config (out/demo/vault-api.yaml) pointing at a vault, with fresh random
+ * Writes a local demo config (out/demo/spall.yaml) pointing at a vault, with fresh random
  * read-only tokens, plus the stats counters for the W5 demo. The tokens are printed and saved to
  * out/demo/tokens.env (gitignored), never committed.
  *
  *   npx tsx scripts/demo-config.ts --vault ../_vault-snapshot [--host 100.66.44.47] [--port 8723]
- *   npx tsx src/cli.ts serve --config out/demo/vault-api.yaml
+ *   npx tsx src/cli.ts serve --config out/demo/spall.yaml
  *
  * The default host is the tailnet address, so the demo is never on a public interface; use
  * --host 127.0.0.1 off the tailnet.
@@ -50,13 +50,13 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(import.met
   const { config, tokens } = demoConfig({ vault: values.vault, host: values.host, port: Number(values.port) });
   const dir = path.resolve('out/demo');
   mkdirSync(dir, { recursive: true });
-  writeFileSync(path.join(dir, 'vault-api.yaml'), stringify(config));
+  writeFileSync(path.join(dir, 'spall.yaml'), stringify(config));
   writeFileSync(
     path.join(dir, 'tokens.env'),
     Object.entries(tokens).map(([name, t]) => `${name.toUpperCase()}_TOKEN=${t}\n`).join(''),
     { mode: 0o600 },
   );
-  console.log(`Wrote ${path.join(dir, 'vault-api.yaml')} (binds ${values.host}:${values.port})`);
+  console.log(`Wrote ${path.join(dir, 'spall.yaml')} (binds ${values.host}:${values.port})`);
   console.log(`Tokens (also in ${path.join(dir, 'tokens.env')}):`);
   for (const [name, t] of Object.entries(tokens)) console.log(`  ${name.padEnd(8)} ${t}`);
 }

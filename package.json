@@ -1,10 +1,10 @@
 {
-  "name": "vault-api",
+  "name": "spall",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
-    "vault-api": "dist/cli.js"
+    "spall": "dist/cli.js"
   },
   "engines": {
     "node": ">=22"

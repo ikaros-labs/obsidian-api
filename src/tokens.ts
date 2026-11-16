@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 
-export const TOKEN_PREFIX = 'vlt_';
+export const TOKEN_PREFIX = 'spl_';
 
 export function generateToken(): string {
   return TOKEN_PREFIX + randomBytes(32).toString('base64url');

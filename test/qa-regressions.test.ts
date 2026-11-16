@@ -149,7 +149,7 @@ describe('bug 2 (medium) / cross-cutting: demo config', () => {
   it('generates fresh random tokens instead of published ones', () => {
     const a = demoConfig({ vault: '/tmp/v' });
     const b = demoConfig({ vault: '/tmp/v' });
-    expect(a.tokens.admin).toMatch(/^vlt_[A-Za-z0-9_-]{43}$/);
+    expect(a.tokens.admin).toMatch(/^spl_[A-Za-z0-9_-]{43}$/);
     expect(a.tokens.admin).not.toBe(b.tokens.admin);
     expect(JSON.stringify(a.config)).not.toContain(a.tokens.admin);
     expect(Object.values(a.tokens).some((t) => t.includes('demo'))).toBe(false);
