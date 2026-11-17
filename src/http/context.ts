@@ -22,6 +22,8 @@ export interface Services {
 declare module 'fastify' {
   interface FastifyRequest {
     auth: { account: Account; token: TokenInfo } | null;
+    /** `mcp/<tool>` on calls made by an MCP tool in this process (see mcp/caller.ts). */
+    via: string | null;
   }
 }
 
@@ -96,6 +98,7 @@ export class Ctx {
       token: this.token.name,
       op,
       path: typeof path === 'string' ? path : join(path),
+      ...(this.req.via ? { via: this.req.via } : {}),
       ...extra,
     });
   }

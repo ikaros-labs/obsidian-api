@@ -1,0 +1,29 @@
+{
+  "name": "spall_trash",
+  "title": "Move a note to the trash",
+  "description": "Moves a note to the vault trash (never deletes permanently). Pass expected_rev to trash only the version you read.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Note path relative to your root; \".md\" optional"
+      },
+      "expected_rev": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "$schema": "https://json-schema.org/draft/2020-12/schema"
+  },
+  "annotations": {
+    "title": "Move a note to the trash",
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false,
+    "openWorldHint": false
+  }
+}

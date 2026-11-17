@@ -1,0 +1,65 @@
+{
+  "name": "spall_list",
+  "title": "List a folder",
+  "description": "Lists notes, files and folders in a folder (view=entries), or the tags used under it with counts (view=tags). Folders marked traverse_only are shown only on the way to folders you can read.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "folder": {
+        "default": "",
+        "description": "Folder relative to your root; \"\" is the root",
+        "type": "string"
+      },
+      "view": {
+        "default": "entries",
+        "type": "string",
+        "enum": [
+          "entries",
+          "tags"
+        ]
+      },
+      "depth": {
+        "default": "1",
+        "description": "\"all\" lists the whole subtree",
+        "type": "string",
+        "enum": [
+          "1",
+          "all"
+        ]
+      },
+      "sort": {
+        "default": "name",
+        "type": "string",
+        "enum": [
+          "name",
+          "-modified",
+          "modified",
+          "-created",
+          "created",
+          "-name"
+        ]
+      },
+      "limit": {
+        "default": 50,
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200
+      },
+      "cursor": {
+        "description": "next_cursor from the previous page",
+        "type": "string"
+      },
+      "frontmatter": {
+        "default": false,
+        "description": "Include each note's frontmatter",
+        "type": "boolean"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema"
+  },
+  "annotations": {
+    "title": "List a folder",
+    "readOnlyHint": true,
+    "openWorldHint": false
+  }
+}

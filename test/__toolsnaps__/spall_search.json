@@ -1,0 +1,48 @@
+{
+  "name": "spall_search",
+  "title": "Search notes",
+  "description": "Full-text search (BM25) over the notes you can read, or notes related to one note. Give exactly one of query or related_to. Returns paths, titles and snippets, not bodies; read a hit with spall_read.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "description": "Search words; \"quoted phrases\", -excluded, tag:x, path:x",
+        "type": "string"
+      },
+      "related_to": {
+        "description": "Note path: find notes similar to it instead",
+        "type": "string"
+      },
+      "folder": {
+        "default": "",
+        "description": "Folder relative to your root; \"\" is the root",
+        "type": "string"
+      },
+      "match": {
+        "default": "all",
+        "description": "Require all words (default) or any",
+        "type": "string",
+        "enum": [
+          "all",
+          "any"
+        ]
+      },
+      "limit": {
+        "default": 10,
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50
+      },
+      "cursor": {
+        "description": "next_cursor from the previous page",
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema"
+  },
+  "annotations": {
+    "title": "Search notes",
+    "readOnlyHint": true,
+    "openWorldHint": false
+  }
+}

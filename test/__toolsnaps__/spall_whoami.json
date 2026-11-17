@@ -1,0 +1,15 @@
+{
+  "name": "spall_whoami",
+  "title": "Who am I",
+  "description": "Your account: root folder, grants per folder (read/create/update/delete) and rate limit. Call it when unsure what you can access.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "$schema": "https://json-schema.org/draft/2020-12/schema"
+  },
+  "annotations": {
+    "title": "Who am I",
+    "readOnlyHint": true,
+    "openWorldHint": false
+  }
+}

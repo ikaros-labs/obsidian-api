@@ -1,0 +1,51 @@
+{
+  "name": "spall_create",
+  "title": "Create a note",
+  "description": "Creates a note. Give folder + title (the file name is derived from the title; on_conflict=rename picks a free name), or path for an exact file name (fails if it exists). Never overwrites.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "folder": {
+        "default": "",
+        "description": "Folder relative to your root; \"\" is the root",
+        "type": "string"
+      },
+      "title": {
+        "type": "string",
+        "maxLength": 500
+      },
+      "path": {
+        "description": "Exact note path instead of folder + title",
+        "type": "string"
+      },
+      "body": {
+        "default": "",
+        "type": "string"
+      },
+      "frontmatter": {
+        "description": "Properties, e.g. {\"tags\": [\"x\"]}",
+        "type": "object",
+        "propertyNames": {
+          "type": "string"
+        },
+        "additionalProperties": {}
+      },
+      "on_conflict": {
+        "default": "rename",
+        "type": "string",
+        "enum": [
+          "rename",
+          "fail"
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema"
+  },
+  "annotations": {
+    "title": "Create a note",
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "idempotentHint": false,
+    "openWorldHint": false
+  }
+}

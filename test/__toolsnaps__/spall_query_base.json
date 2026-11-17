@@ -1,0 +1,85 @@
+{
+  "name": "spall_query_base",
+  "title": "Query a Base",
+  "description": "Evaluates an Obsidian Bases view (base = path of a .base file) or an ad-hoc query over folders (from). filters use Bases syntax, e.g. {\"and\": [\"status == \\\"todo\\\"\", \"file.hasTag(\\\"x\\\")\"]}.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "base": {
+        "description": "Path of a .base file",
+        "type": "string"
+      },
+      "view": {
+        "description": "View name in the base (default: its first view)",
+        "type": "string"
+      },
+      "from": {
+        "description": "Ad-hoc query: folders to read from",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "filters": {},
+      "formulas": {
+        "description": "Ad-hoc query: name → formula",
+        "type": "object",
+        "propertyNames": {
+          "type": "string"
+        },
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "select": {
+        "description": "Columns, e.g. [\"file.name\", \"status\"]",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "sort": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "property": {
+              "type": "string"
+            },
+            "direction": {
+              "default": "ASC",
+              "type": "string",
+              "enum": [
+                "ASC",
+                "DESC"
+              ]
+            }
+          },
+          "required": [
+            "property"
+          ]
+        }
+      },
+      "limit": {
+        "default": 20,
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100
+      },
+      "cursor": {
+        "description": "next_cursor from the previous page",
+        "type": "string"
+      },
+      "count_only": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema"
+  },
+  "annotations": {
+    "title": "Query a Base",
+    "readOnlyHint": true,
+    "openWorldHint": false
+  }
+}
