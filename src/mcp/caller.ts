@@ -1,5 +1,6 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
+import { ToolError } from './errors.js';
 
 /** One call into the Spall REST API. `tool` names the MCP tool making it (for the audit log). */
 export interface CallRequest {
@@ -24,14 +25,35 @@ export interface CallResult {
  */
 export type Caller = (req: CallRequest) => Promise<CallResult>;
 
-/** `Research/Some note` → `Research/Some%20note`; leading and trailing slashes are dropped. */
+const dotSegment = () => new ToolError('invalid_path', 'Relative path segments ("." and "..") are not allowed');
+
+/**
+ * `Research/Some note` → `Research/Some%20note`; leading and trailing slashes are dropped. `.` and
+ * `..` are rejected: URL normalisation would resolve them, so the call would reach another resource.
+ */
 export const encPath = (p: string): string =>
   p
     .replace(/^\/+|\/+$/g, '')
     .split('/')
     .filter((s) => s !== '')
-    .map(encodeURIComponent)
+    .map((s) => {
+      if (s === '.' || s === '..') throw dotSegment();
+      return encodeURIComponent(s);
+    })
     .join('/');
+
+/** Both callers check the final URL too, before inject or fetch can normalise it. */
+function checkUrl(url: string): void {
+  for (const seg of url.split(/[?#]/)[0]!.split('/')) {
+    let decoded = seg;
+    try {
+      decoded = decodeURIComponent(seg);
+    } catch {
+      // REST rejects malformed encoding itself
+    }
+    if (decoded === '.' || decoded === '..') throw dotSegment();
+  }
+}
 
 /** `{a: 1, b: undefined}` → `?a=1`. */
 export function qs(params: Record<string, string | number | boolean | undefined | null>): string {
@@ -63,6 +85,7 @@ const flatHeaders = (h: Record<string, string | string[] | number | undefined>) 
 /** Calls the server in-process with the MCP request's own Authorization header. */
 export function injectCaller(app: FastifyInstance, authorization: string): Caller {
   return async (r) => {
+    checkUrl(r.url);
     const headers: Record<string, string> = { authorization, ...r.headers };
     if (r.tool) Object.assign(headers, { [VIA_HEADER]: `mcp/${r.tool}`, [INJECT_HEADER]: INJECT_SECRET });
     let payload: string | undefined;
@@ -79,6 +102,7 @@ export function injectCaller(app: FastifyInstance, authorization: string): Calle
 export function fetchCaller(baseUrl: string, token: string, fetchImpl: typeof fetch = fetch): Caller {
   const base = baseUrl.replace(/\/+$/, '');
   return async (r) => {
+    checkUrl(r.url);
     const headers: Record<string, string> = { authorization: `Bearer ${token}`, ...r.headers };
     let body: string | undefined;
     if (r.body !== undefined) {

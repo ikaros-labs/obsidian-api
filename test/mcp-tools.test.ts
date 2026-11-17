@@ -2,10 +2,13 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Client } from '@modelcontextprotocol/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { TOOL_NAMES, visibleTools } from '../src/mcp/tools.js';
+import { existsSync } from 'node:fs';
+import { fetchCaller, injectCaller } from '../src/mcp/caller.js';
+import { ToolError } from '../src/mcp/errors.js';
+import { runTool, TOOL_NAMES, visibleTools } from '../src/mcp/tools.js';
 import { fence, truncateLines } from '../src/mcp/format.js';
 import { ACCOUNTS, setup, type TestEnv } from './helpers.js';
-import { callTool, mcpClient } from './mcp-helpers.js';
+import { callTool, injectFetch, mcpClient } from './mcp-helpers.js';
 
 const EDGE = `---
 count: 5
@@ -429,6 +432,58 @@ describe('edit regression suite (through MCP)', () => {
     const r = await edit(fresh('Missing'), [{ op: 'append' }]);
     expect(r.data.error).toMatchObject({ code: 'invalid_request' });
     expect(r.text).toContain('needs content');
+  });
+});
+
+describe('dot segments never reach another resource', () => {
+  // Review repro: "../files/…" normalised /v1/notes/../files/x to /v1/files/x, so spall_trash
+  // deleted an attachment and reported a note.
+  const PDF = 'Research/inbox/attachment.pdf';
+
+  it('spall_trash ../files/… is a tool error over MCP (inject caller), and the file stays', async () => {
+    write(PDF, '%PDF-1.4');
+    const r = await callTool(agent, 'spall_trash', { path: `../files/${PDF}` });
+    expect(r.isError).toBe(true);
+    expect(r.data.error).toMatchObject({ code: 'invalid_path' });
+    expect(existsSync(path.join(env.vault, PDF))).toBe(true);
+  });
+
+  it('is rejected by both callers, for every path-taking tool', async () => {
+    write(PDF, '%PDF-1.4');
+    const callers = {
+      inject: injectCaller(env.app.server, 'Bearer tok-agent'),
+      fetch: fetchCaller('http://spall.test', 'tok-agent', injectFetch(env)),
+    };
+    const cases: [Parameters<typeof runTool>[0], Record<string, unknown>][] = [
+      ['spall_trash', { path: `../files/${PDF}` }],
+      ['spall_trash', { path: `Research/./../files/${PDF}` }],
+      ['spall_read', { path: '../files/Research/inbox/attachment.pdf' }],
+      ['spall_edit', { path: '..', ops: [{ op: 'append', content: 'x' }] }],
+      ['spall_move', { path: `../files/${PDF}`, destination: 'Research/inbox/x' }],
+      ['spall_create', { path: '../files/Research/inbox/new.pdf', body: 'x' }],
+      ['spall_list', { folder: 'Research/..' }],
+      ['spall_query_base', { base: '../notes/Research/Plan' }],
+    ];
+    for (const [name, caller] of Object.entries(callers)) {
+      for (const [tool, args] of cases) {
+        const err = await runTool(tool, caller, args, { fence: false }).then(
+          () => null,
+          (e: unknown) => e,
+        );
+        expect(err, `${name} ${tool} ${JSON.stringify(args)}`).toBeInstanceOf(ToolError);
+        expect((err as ToolError).code).toBe('invalid_path');
+      }
+      // the callers check the final URL too, encoded dots included
+      for (const url of ['/v1/notes/../files/x', '/v1/notes/%2e%2e/files/x', '/v1/notes/./x']) {
+        await expect(caller({ method: 'DELETE', url })).rejects.toMatchObject({ code: 'invalid_path' });
+      }
+    }
+    expect(existsSync(path.join(env.vault, PDF))).toBe(true);
+  });
+
+  it('names that merely contain dots still work', async () => {
+    write('Research/inbox/v1.2..notes.md', 'dots');
+    expect((await read('Research/inbox/v1.2..notes')).content).toBe('dots');
   });
 });
 
