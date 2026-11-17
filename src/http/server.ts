@@ -10,7 +10,7 @@ import { fileRoutes } from './files.js';
 import { folderRoutes } from './folders.js';
 import { mcpRoutes } from './mcp.js';
 import { noteRoutes } from './notes.js';
-import { doc, registerOpenApi } from './openapi.js';
+import { doc, registerOpenApi, version } from './openapi.js';
 import { searchRoutes } from './search.js';
 import { statsRoutes } from './stats.js';
 
@@ -121,7 +121,7 @@ export async function openApiDocument() {
 }
 
 function routes(app: FastifyInstance, s: Services) {
-  app.get('/healthz', { schema: doc({ summary: 'Liveness check', tag: 'System', public: true }) }, async () => ({ ok: true }));
+  app.get('/healthz', { schema: doc({ summary: 'Liveness check', tag: 'System', public: true }) }, async () => ({ ok: true, version }));
 
   app.get('/openapi.json', { schema: doc({ summary: 'This OpenAPI document', tag: 'System', public: true }) }, async () => app.swagger());
 

@@ -425,6 +425,19 @@ export function visibleTools(grants: { permissions: readonly string[] }[], ...na
   });
 }
 
+/**
+ * Runs one tool outside MCP (the CLI): validates `args` with the tool's schema and returns its
+ * output. Throws ToolError for REST errors and invalid arguments.
+ */
+export async function runTool(name: ToolName, caller: Caller, args: Record<string, unknown>, opts: { fence: boolean }): Promise<ToolOutput> {
+  const t = TOOLS.find((x) => x.name === name)!;
+  const parsed = t.input.safeParse(args);
+  if (!parsed.success) {
+    throw new ToolError('invalid_request', parsed.error.issues.map((i) => `${i.path.join('.') || '(args)'}: ${i.message}`).join('; '));
+  }
+  return t.run({ call: (r) => caller({ ...r, tool: t.name }), fence: opts.fence }, parsed.data);
+}
+
 /** An MCP server exposing `tools`, each calling Spall through `caller`. */
 export function buildMcpServer(tools: ToolDef[], caller: Caller, opts: { fence: boolean }): McpServer {
   const server = new McpServer({ name: 'spall', version }, { instructions: INSTRUCTIONS });

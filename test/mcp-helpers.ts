@@ -10,7 +10,7 @@ export function injectFetch(env: TestEnv): typeof fetch {
       method: req.method as 'POST',
       url: u.pathname + u.search,
       headers: Object.fromEntries(req.headers),
-      payload: req.method === 'POST' ? await req.text() : undefined,
+      payload: req.method === 'GET' || req.method === 'HEAD' ? undefined : await req.text(),
     });
     const headers = new Headers();
     for (const [k, v] of Object.entries(res.headers)) if (v !== undefined) headers.set(k, Array.isArray(v) ? v.join(', ') : String(v));

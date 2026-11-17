@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifySchema } from 'fastify';
 import { createRequire } from 'node:module';
 import { z } from 'zod';
 
-const { version } = createRequire(import.meta.url)('../../package.json') as { version: string };
+export const { version } = createRequire(import.meta.url)('../../package.json') as { version: string };
 
 /** The input side of a zod schema as JSON Schema, for the OpenAPI document. */
 export function jsonSchema(schema: z.ZodType): Record<string, unknown> {
