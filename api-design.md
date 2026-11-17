@@ -9,7 +9,7 @@ A self-hosted REST server over a folder of markdown files (an Obsidian vault or 
 | Topic | Decision |
 |---|---|
 | Language | TypeScript, chosen so the Bases expression library can be reused later |
-| Interface | REST only, no MCP endpoint |
+| Interface | REST is the only security boundary. MCP (`/mcp` and `spall mcp` over stdio) and the client CLI are built on it (see *MCP and the client CLI*, added in 1.1) |
 | Write scope | Full CRUD, plus a targeted PATCH |
 | Vault | Any folder of `.md` files. Doesn't require Obsidian or a particular sync tool |
 | Timestamps | Filesystem only: `created` = birth time (falls back to mtime), `modified` = mtime |
@@ -198,7 +198,7 @@ Query parameters: `depth` (`1` or `all`, default `1`) and `kind` (`note`, `file`
 `GET /v1/tags?folder=` returns `{ results: [{ "tag": "ai", "count": 31 }] }`. The counts include only the notes the account can see.
 
 ### Health
-`GET /healthz` needs no auth and returns 200.
+`GET /healthz` needs no auth and returns 200 with `{ "ok": true, "version": "1.1.0" }`.
 
 ---
 
@@ -319,6 +319,7 @@ spall token create <account> [--name n] [--expires 2027-10-01]   # prints the to
 spall token list [account]
 spall token revoke <account> <name>
 ```
+These admin commands read the config file. The client commands (`spall whoami|search|ls|read|new|edit|…|mcp|doctor`) talk to a server instead; see *MCP and the client CLI*.
 
 ---
 
@@ -348,7 +349,7 @@ spall token revoke <account> <name>
 | Grafana | `GET /v1/stats?metric=modified&interval=day` through the Infinity datasource, or scrape `/v1/stats/metrics` with Prometheus |
 | Find a note | `GET /v1/search?q=…` |
 | Agent recall | `GET /v1/related?path=…` for notes on the same topic |
-| Agents | `GET /me` → folder listing → note (outline) → `PATCH` with `replace_text` and `if_match` |
+| Agents | MCP or the CLI: `spall_whoami` → `spall_search` → `spall_read view=outline` (rev) → `spall_edit` with `expected_rev`. Over REST: `GET /me` → folder listing → note (outline) → `PATCH` with `if_match` |
 
 Once query exists, the reading-list bot can filter by `status == "to-read"` on the server. Until then it filters on the client side or keeps unread items in a subfolder.
 
@@ -600,6 +601,69 @@ spall_property_notes{counter="reading",property="Status",value="Not started"} 32
 ```
 It takes `folder` too. The values are gauges, recomputed from the index on every scrape, which takes a few milliseconds on a vault of 2,000 notes.
 
+## MCP and the client CLI
+
+Status: implemented in 1.1. This replaces the original "REST only, no MCP endpoint" decision: agents no longer need to wrap the REST API themselves.
+
+### Shape
+- **One tool module, three transports.** `src/mcp/tools.ts` defines nine task-shaped tools. Each one calls Spall through a `Caller`, `(method, url, headers, body) → (status, headers, body)`:
+  - `POST /mcp` on the server uses `fastify.inject()`, carrying the request's own `Authorization` header;
+  - `spall mcp` (stdio) and the client CLI use `fetch` with `SPALL_URL` + `SPALL_TOKEN`.
+- **REST stays the only security boundary.** Every tool call is an ordinary REST call, so auth, scoping, 404-not-403, rate limits, revision checks and the audit log are the REST ones. No access logic is duplicated. Hiding tools is a convenience, not enforcement.
+- **Task-shaped, not 1:1 REST.** Nine tools instead of ~30 endpoints keep `tools/list` around 9 KB for an account that sees everything (a test caps it at 16 KB). Schemas are flat (no `oneOf`), descriptions stay under 1 KB, and every tool sets `openWorldHint: false`. Schemas are snapshot-tested in `test/__toolsnaps__/`.
+- **Endpoint.** `/mcp` is stateless Streamable HTTP via `@modelcontextprotocol/server` 2.x. It serves 2026-07-28 clients and 2025-era `initialize` clients. Each request builds a fresh server with only the tools the account may see. `GET`/`DELETE` return 405. It isn't part of the OpenAPI document.
+
+### Tools
+
+| Tool | Wraps | Shown when one grant has | Hints |
+|---|---|---|---|
+| `spall_whoami` | `GET /v1/me` | always | read-only |
+| `spall_search` | `GET /v1/search`, or `/v1/related` with `related_to` | `read` | read-only |
+| `spall_list` | `GET /v1/folders/{path}`, or `/v1/tags` with `view=tags` | `read` | read-only |
+| `spall_read` | `GET /v1/notes/{path}`: `markdown`, `outline`, `frontmatter` or `section` | `read` | read-only |
+| `spall_query_base` | `POST /v1/bases/{path}/query`, `POST /v1/query` | `read` | read-only |
+| `spall_create` | `POST /v1/notes`, or `PUT` + `If-None-Match: *` for an exact path | `create` | not destructive |
+| `spall_edit` | `PATCH /v1/notes/{path}`; `PUT` + `If-Match` for `replace_all` | `update` | not destructive |
+| `spall_move` | `POST /v1/notes/{path}/move` | `update` + `delete` | not destructive |
+| `spall_trash` | `DELETE /v1/notes/{path}` (trash only, never `permanent`) | `delete` | destructive |
+
+- `spall_read view=section` and `spall_edit` match headings with the same code (`headingRegion` in `patch.ts`), so they agree on which heading is meant and on ambiguity errors.
+- `spall_read` always returns `rev`. `view=outline` is the cheap way to get it without the body. Long notes are cut at a line boundary (`max_chars`, default 20,000) with `truncated: true` and a hint to read sections instead.
+- `spall_edit` ops are one flat object type (`op`, `heading`, `index`, `block`, `content`, `key`, `value`, `old`, `new`, `count`). They map to PATCH ops and apply atomically. The result carries the new `rev`, `previous_rev` and a `changed lines: +n −m` summary. It costs two REST calls: a read, then the PATCH.
+
+### Visibility
+A tool is shown when **one** grant includes every permission it needs. Then each narrowing can only remove tools:
+- the account's `mcp: {read_only, tools}` in the config;
+- `?read_only=1&tools=a,b` on `/mcp`, or `spall mcp --read-only --tools a,b`.
+
+`read_only` drops every tool without `readOnlyHint`. The tool list is computed per request, so config reloads apply immediately. `/v1/me` reports the account's `mcp` settings, so `spall mcp` (stdio) applies the same filtering.
+
+### Results and errors
+- `structuredContent` and the text content come from one object.
+- Note bodies (markdown and section views) are wrapped in `<untrusted-content source="spall" path="…" rev="…">`. A closing marker inside the note is escaped. The server `instructions` tell the model not to follow instructions inside the markers. This is `mcp.fence_untrusted`, on by default and overridable per account.
+- REST errors become `isError: true` results with the REST `code`, a hint, and `structuredContent.error`:
+
+| Code | Tool error |
+|---|---|
+| `not_found` | Always the same text, without a request id, so a hidden note and a missing one can't be told apart |
+| `forbidden` | The REST message plus a pointer to `spall_whoami` |
+| `rev_mismatch` | `current_rev`, plus the current section when the edit targeted a heading |
+| `patch_target_ambiguous` | The candidates with their `index` |
+| `rate_limited` | `retry_after` |
+
+### Auth, audit, limits
+- `/mcp` uses the same bearer tokens: 401 with `WWW-Authenticate: Bearer`, and 404 when `mcp.enabled: false`.
+- A browser `Origin` is rejected unless it's listed in `mcp.allowed_origins`. Requests without an Origin are allowed.
+- The `/mcp` request itself is not counted against the rate limit; the REST calls its tools make are. Protocol-only traffic (`initialize`, `tools/list`) is therefore uncapped. It touches no vault data.
+- Writes made through `/mcp` are audited with `via: mcp/<tool>`. The marker is set only on in-process inject calls, which carry a per-process random secret header, so a client can't forge it. Writes from `spall mcp` and the CLI arrive over HTTP and are audited as plain REST writes.
+
+### Client CLI
+`spall whoami | search | ls | tags | read | new | edit | mv | trash | base | mcp | doctor` run the same tool handlers through `fetch`. Credentials come only from the environment or flags (no credential file yet). Output is human-readable, or JSON with `--json`. Exit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 forbidden, 5 rev conflict, 6 rate limited, 7 auth.
+
+### Not in 1.1
+- OAuth: an OAuth 2.1 resource server, which Claude.ai and ChatGPT remote connectors need.
+- File and attachment tools, a stats tool, restore from trash, prompts and resources.
+
 ## Later
 - **Bases:** `GET /v1/bases` listing, `summaries`, and creating notes through a view (see *Bases*).
 - **Search:** `mode=semantic|hybrid`, fuzzy matching, field filters.
@@ -612,5 +676,4 @@ It takes `folder` too. The values are gauges, recomputed from the index on every
 ## Not planned
 - **Obsidian commands, an active file, opening notes in the UI:** there is no app on the server.
 - **Built-in periodic notes:** clients can create `Daily/2026-10-01.md` themselves.
-- **MCP:** REST only.
 - **Notion-style typed property wrappers:** frontmatter stays plain JSON.

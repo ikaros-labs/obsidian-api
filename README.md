@@ -4,11 +4,12 @@
 
 <h1 align="center">Spall</h1>
 
-<p align="center">A scoped REST API for your Obsidian vault: give every bot, script or agent its own spall of it.</p>
+<p align="center">A scoped REST API, MCP server and CLI for your Obsidian vault: give every bot, script or agent its own spall of it.</p>
 
 <p align="center">
   <a href="https://spall.nikmel.xyz">Website &amp; playground</a> ·
   <a href="#quickstart-60-seconds">Quickstart</a> ·
+  <a href="#agents-mcp--cli">Agents (MCP + CLI)</a> ·
   <a href="https://github.com/ikaros-labs/spall/releases">Releases</a>
 </p>
 
@@ -23,6 +24,7 @@ Spall gives each of them its own account:
 - **Scoped to folders**, gitignore-style: the deepest matching path wins, and anything else simply doesn't exist for that account (**404, not 403**).
 - **Headless.** Obsidian doesn't need to be running. Spall reads and writes plain markdown on disk, so it works with any sync (Syncthing, Obsidian Sync, git, …).
 - **Notes, files and folders**: read, create, section-level `PATCH`, frontmatter edits, move, trash, and an audit log of every write.
+- **Agents**: a built-in MCP server (`/mcp` over HTTP, or `spall mcp` over stdio) and a `spall` CLI, both with the same tokens and scopes. An agent only sees the tools its grants allow.
 - **Bases**: evaluates Obsidian `.base` files and ad-hoc queries without Obsidian.
 - **Search** (BM25, English + Russian stemming), related notes, stats and Prometheus metrics, all computed over only what the account can read.
 - **One YAML file** with hot reload, and a CLI that explains *why* an account can or can't reach a path.
@@ -110,7 +112,7 @@ eink:
     Dashboards/eink.md: read
 ```
 
-**AI agents.** Read your notes and work in a research folder, but never see the private subfolder:
+**AI agents.** Read your notes and work in a research folder, but never see the private subfolder. Connect it over [MCP or the CLI](#agents-mcp--cli):
 
 ```yaml
 agent:
@@ -148,6 +150,120 @@ scrape_configs:
 
 The gauges are `spall_notes`, `spall_notes_created{window}` and `spall_notes_modified{window}` (24h, 7d, 30d), `spall_last_modified_timestamp_seconds`, `spall_folder_notes{counter,path}` and `spall_property_notes{counter,property,value}`.
 
+## Agents (MCP + CLI)
+
+Agents can use Spall without any glue code: through the **MCP endpoint** `POST /mcp` (Streamable HTTP, stateless), through **`spall mcp`** (stdio, for clients that only run local commands), or through the **`spall` CLI** (for agents with a shell). All three use an account token and go through the same REST checks, so scoping, 404-not-403, rate limits, revisions and the audit log are exactly the same as for REST calls.
+
+**Tools.** An account sees only the tools its grants allow: a read-only account gets the first five, an `append` drop folder gets `spall_whoami` and `spall_create`.
+
+| Tool | What it does | Needs |
+|---|---|---|
+| `spall_whoami` | Root, grants and rate limit | – |
+| `spall_search` | BM25 search, or notes related to a note; paths and snippets, no bodies | `read` |
+| `spall_list` | Folder entries, or tags with counts | `read` |
+| `spall_read` | A note as markdown, outline (headings + `rev`, no body), frontmatter, or one section; long notes are cut at `max_chars` | `read` |
+| `spall_query_base` | Evaluate a `.base` view or an ad-hoc Bases query | `read` |
+| `spall_create` | Create a note from a title, or at an exact path; never overwrites | `create` |
+| `spall_edit` | Atomic edits: append/prepend/replace under a heading or block, `replace_text`, frontmatter set/unset/merge, whole-file replace; `expected_rev` guards against lost updates | `update` |
+| `spall_move` | Move or rename | `update` + `delete` |
+| `spall_trash` | Move to the trash (never permanent); the only tool marked destructive | `delete` |
+
+Note bodies come back wrapped in `<untrusted-content …>` markers, and the server instructions tell the model not to follow instructions inside them (`mcp.fence_untrusted`, on by default). Vaults hold imported articles and tweets, so this matters.
+
+**Narrowing.** Tools can be hidden, never added: per account in the config (`mcp: {read_only: true, tools: [...]}`), per connection with `/mcp?read_only=1&tools=spall_search,spall_read`, or with `spall mcp --read-only --tools …`. Hiding a tool is a convenience; the REST checks are what enforce access.
+
+**Rate limits.** Each tool call counts as the REST calls it makes: one for most tools, two for `spall_edit` (it reads the note first for the previous rev and the change summary), three when an edit that targets a heading fails on a stale rev (it fetches the current section). MCP protocol traffic itself (`initialize`, `tools/list`) isn't counted.
+
+### Connect a client
+
+Replace the URL and token with yours. Use the token of an account made for the agent, like the `agent` example above.
+
+**Claude Code:**
+
+```sh
+claude mcp add --transport http spall http://127.0.0.1:8787/mcp --header "Authorization: Bearer spl_…"
+```
+
+**Codex** (`~/.codex/config.toml`, with `SPALL_TOKEN` in the environment):
+
+```toml
+[mcp_servers.spall]
+url = "http://127.0.0.1:8787/mcp"
+bearer_token_env_var = "SPALL_TOKEN"
+```
+
+**Cursor** (`~/.cursor/mcp.json` or `.cursor/mcp.json`), or [add it with a link](cursor://anysphere.cursor-deeplink/mcp/install?name=spall&config=eyJ1cmwiOiJodHRwOi8vMTI3LjAuMC4xOjg3ODcvbWNwIiwiaGVhZGVycyI6eyJBdXRob3JpemF0aW9uIjoiQmVhcmVyIHNwbF9ZT1VSX1RPS0VOIn19) and edit the URL and token:
+
+```json
+{
+  "mcpServers": {
+    "spall": {
+      "url": "http://127.0.0.1:8787/mcp",
+      "headers": { "Authorization": "Bearer spl_…" }
+    }
+  }
+}
+```
+
+**Claude Desktop** (`claude_desktop_config.json`; it runs `spall mcp` locally over stdio):
+
+```json
+{
+  "mcpServers": {
+    "spall": {
+      "command": "npx",
+      "args": ["-y", "spall", "mcp"],
+      "env": { "SPALL_URL": "http://127.0.0.1:8787", "SPALL_TOKEN": "spl_…" }
+    }
+  }
+}
+```
+
+**Hermes** (`config.yaml`):
+
+```yaml
+mcp_servers:
+  spall:
+    url: http://127.0.0.1:8787/mcp
+    headers:
+      Authorization: Bearer spl_…
+```
+
+Any other stdio client: run `npx -y spall mcp` with `SPALL_URL` and `SPALL_TOKEN` set. Browser Origins are rejected unless listed in `mcp.allowed_origins`; requests without an Origin (CLIs, agents) are allowed.
+
+### CLI
+
+`npm i -g spall` (or `npx -y spall …`), then set `SPALL_URL` and `SPALL_TOKEN` (or pass `--url` and `--token`). For shell agents (Claude Code, Codex, Hermes), [`skills/spall/SKILL.md`](skills/spall/SKILL.md) is a ready-made skill that teaches the commands below.
+
+```
+spall whoami                                   # root, grants, rate limit
+spall search <query> [--folder F] [--any] [--limit N] | spall search --related <path>
+spall ls [folder] [--all] [--sort -modified] [--frontmatter]
+spall tags [folder]
+spall read <path>                              # raw markdown, pipeable
+spall read <path> --outline | --frontmatter | --section "Notes > Highlights"
+spall new <folder> <title> [--body text|-] [--fm key=value ...]
+spall edit <path> [--rev R] [--set k=v] [--unset k] [--append-to H] [--prepend-to H]
+          [--replace-section H] [--append] [--content text|-] [--replace OLD --with NEW] [--ops file.json|-]
+spall mv <path> <destination> | spall trash <path> [--rev R]
+spall base <file.base> [--view V]
+spall mcp [--read-only] [--tools a,b]          # MCP over stdio
+spall doctor                                   # URL reachable, token valid, grants, MCP enabled
+```
+
+Every command takes `--json`. Exit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 forbidden, 5 rev conflict, 6 rate limited, 7 auth.
+
+```
+$ spall read Research/Plan --outline
+rev: sha256:071a36b954f871a3
+# Plan  (line 6)
+  ## Notes  (line 10)
+    ### Highlights  (line 14)
+$ spall edit Research/Plan --rev sha256:071a36b954f871a3 --append-to "Notes > Highlights" --content "- new point"
+Research/Plan.md
+rev: sha256:082f85f1f14f1b25  (changed lines: +1 −0)
+```
+
 ## Configuration
 
 The config file must live **outside** the vault (the server refuses to start otherwise). It reloads when the file changes or on `SIGHUP`. If the new version is invalid, the server keeps the old one and logs why.
@@ -167,6 +283,10 @@ audit:
   path: /var/lib/spall/audit.jsonl   # optional: one JSON line per write
 defaults:
   rate_limit: 120/min      # per account; sec, min or hour
+mcp:
+  enabled: true            # default; false = /mcp answers 404
+  allowed_origins: []      # browser Origins allowed to call /mcp (none by default)
+  fence_untrusted: true    # default: wrap note bodies in <untrusted-content> for MCP clients
 accounts:
   <name>:
     description: …
@@ -175,6 +295,10 @@ accounts:
     access:                # path (relative to root) → level
       .: read
       Some/Sub: none
+    mcp:                   # optional: hide MCP tools for this account (never adds any)
+      read_only: false
+      tools: [spall_search, spall_read]
+      fence_untrusted: true
     tokens: []             # managed by `spall token`
 ```
 
@@ -200,7 +324,7 @@ accounts:
 
 ## API
 
-All endpoints are under `/v1` and take `Authorization: Bearer <token>`. Paths are relative to the account root, percent-encoded per segment; `.md` can be left off for notes. The full reference is [`openapi.json`](openapi.json), also served by every instance at `GET /openapi.json`.
+All endpoints are under `/v1` (plus `/mcp`, see [Agents](#agents-mcp--cli)) and take `Authorization: Bearer <token>`. Paths are relative to the account root, percent-encoded per segment; `.md` can be left off for notes. The full reference is [`openapi.json`](openapi.json), also served by every instance at `GET /openapi.json`.
 
 | Endpoint | What |
 |---|---|
@@ -217,11 +341,12 @@ All endpoints are under `/v1` and take `Authorization: Bearer <token>`. Paths ar
 | `GET /v1/bases/{path}`, `POST /v1/bases/{path}/query`, `POST /v1/query` | Obsidian Bases: read a `.base`, evaluate a view, or run an ad-hoc query |
 | `GET /v1/search`, `GET /v1/related` | BM25 search (`"phrases"`, `-exclusions`, `prefix*`) and more-like-this |
 | `GET /v1/stats`, `GET /v1/stats/metrics` | Created/modified series and counters, as JSON or Prometheus text |
-| `GET /healthz`, `GET /openapi.json` | No auth |
+| `POST /mcp` | MCP (Streamable HTTP, stateless; not in the OpenAPI document) |
+| `GET /healthz`, `GET /openapi.json` | No auth; `/healthz` returns the version |
 
 Errors always use one envelope: `{"error": {"code": "…", "message": "…", "request_id": "…"}}`. The design notes behind all of this are in [api-design.md](api-design.md). [`bruno/`](bruno) is a [Bruno](https://www.usebruno.com) collection covering every endpoint.
 
-## CLI
+## Server CLI
 
 ```
 spall serve                                  # start the server
@@ -258,10 +383,11 @@ Found a vulnerability? See [SECURITY.md](SECURITY.md).
 | Runs | Standalone server / Docker | Inside the Obsidian app | Usually a local process per AI client |
 | Needs Obsidian running | No | Yes | Depends on the server |
 | Access control | Per account, per folder, per permission | One API key, whole vault | Usually the whole vault |
-| Clients | Anything that speaks HTTP | Anything that speaks HTTP | MCP clients (LLM apps) |
+| Clients | Anything that speaks HTTP, MCP clients, shell agents (CLI) | Anything that speaks HTTP | MCP clients (LLM apps) |
+| MCP | Built in: `/mcp` (HTTP) and `spall mcp` (stdio); tools follow the account's grants | No; needs a separate MCP server | Yes |
 | Obsidian commands, plugins, active file | No | Yes | Some |
 
-What Spall can't do: it doesn't run Obsidian commands or plugins (no Dataview, no Templater), doesn't rewrite links when you move notes, has no MCP endpoint (agents call it over HTTP), no semantic/embedding search, and no admin API (accounts live in the YAML). One server serves one vault.
+What Spall can't do: it doesn't run Obsidian commands or plugins (no Dataview, no Templater), doesn't rewrite links when you move notes, has no OAuth yet (so no Claude.ai or ChatGPT remote connectors; local and token-based MCP clients work), no file/attachment tools over MCP, no semantic/embedding search, and no admin API (accounts live in the YAML). One server serves one vault.
 
 ## Develop
 
@@ -276,7 +402,7 @@ npm run cli -- check -c spall.yaml
 The access rules are also published as a browser-safe module (no Node APIs), which the landing-page playground uses:
 
 ```sh
-npm i github:ikaros-labs/spall
+npm i spall
 ```
 
 ```ts
