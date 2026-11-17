@@ -658,7 +658,7 @@ A tool is shown when **one** grant includes every permission it needs. Then each
 - Writes made through `/mcp` are audited with `via: mcp/<tool>`. The marker is set only on in-process inject calls, which carry a per-process random secret header, so a client can't forge it. Writes from `spall mcp` and the CLI arrive over HTTP and are audited as plain REST writes.
 
 ### Client CLI
-`spall whoami | search | ls | tags | read | new | edit | mv | trash | base | mcp | doctor` run the same tool handlers through `fetch`. Credentials come only from the environment or flags (no credential file yet). Output is human-readable, or JSON with `--json`. Exit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 forbidden, 5 rev conflict, 6 rate limited, 7 auth.
+`spall whoami | search | ls | tags | read | new | edit | mv | trash | base | mcp | doctor` run the same tool handlers through `fetch`. Credentials come from `SPALL_URL` (or `--url`) and `SPALL_TOKEN`, which is read only from the environment. There is no `--token` flag, so the token stays out of argv, and no credential file yet. Output is human-readable, or JSON with `--json`. Exit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 forbidden, 5 rev conflict, 6 rate limited, 7 auth.
 
 ### Not in 1.1
 - OAuth: an OAuth 2.1 resource server, which Claude.ai and ChatGPT remote connectors need.

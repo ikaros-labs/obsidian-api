@@ -233,7 +233,7 @@ Any other stdio client: run `npx -y spall mcp` with `SPALL_URL` and `SPALL_TOKEN
 
 ### CLI
 
-`npm i -g spall` (or `npx -y spall …`), then set `SPALL_URL` and `SPALL_TOKEN` (or pass `--url` and `--token`). For shell agents (Claude Code, Codex, Hermes), [`skills/spall/SKILL.md`](skills/spall/SKILL.md) is a ready-made skill that teaches the commands below.
+`npm i -g spall` (or `npx -y spall …`), then set `SPALL_URL` and `SPALL_TOKEN` in the environment (`--url` can replace `SPALL_URL`; the token is never taken from the command line, so it stays out of process listings and shell history). For shell agents (Claude Code, Codex, Hermes), [`skills/spall/SKILL.md`](skills/spall/SKILL.md) is a ready-made skill that teaches the commands below.
 
 ```
 spall whoami                                   # root, grants, rate limit
@@ -246,7 +246,7 @@ spall new <folder> <title> [--body text|-] [--fm key=value ...]
 spall edit <path> [--rev R] [--set k=v] [--unset k] [--append-to H] [--prepend-to H]
           [--replace-section H] [--append] [--content text|-] [--replace OLD --with NEW] [--ops file.json|-]
 spall mv <path> <destination> | spall trash <path> [--rev R]
-spall base <file.base> [--view V]
+spall base <file.base> [--view V] [--limit N] [--cursor C]
 spall mcp [--read-only] [--tools a,b]          # MCP over stdio
 spall doctor                                   # URL reachable, token valid, grants, MCP enabled
 ```

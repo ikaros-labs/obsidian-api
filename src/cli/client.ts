@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { parse as parseYaml, stringify } from 'yaml';
@@ -7,7 +8,7 @@ import { buildMcpServer, runTool, visibleTools, type ToolName } from '../mcp/too
 
 export const CLIENT_COMMANDS = ['whoami', 'search', 'ls', 'tags', 'read', 'new', 'edit', 'mv', 'trash', 'base', 'mcp', 'doctor'];
 
-export const CLIENT_USAGE = `Client commands (need SPALL_URL and SPALL_TOKEN, or --url and --token):
+export const CLIENT_USAGE = `Client commands (need SPALL_TOKEN in the environment, and SPALL_URL or --url):
   whoami                                Your account, root and grants
   search <query> [--folder F] [--any] [--limit N] [--cursor C]
   search --related <path>               Notes similar to a note
@@ -22,7 +23,7 @@ export const CLIENT_USAGE = `Client commands (need SPALL_URL and SPALL_TOKEN, or
       --ops file.json|-  (a JSON array of spall_edit ops)
   mv <path> <destination> [--rename]
   trash <path> [--rev R]
-  base <file.base> [--view V] [--limit N]
+  base <file.base> [--view V] [--limit N] [--cursor C]
   mcp [--read-only] [--tools a,b]       MCP server over stdio
   doctor                                Check the URL, token and grants
 
@@ -44,7 +45,6 @@ class UsageError extends Error {}
 
 const COMMON = {
   url: { type: 'string' },
-  token: { type: 'string' },
   json: { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
 } as const;
@@ -71,7 +71,7 @@ const OPTIONS: Record<string, ParseArgsConfig['options']> = {
   },
   mv: { rename: { type: 'boolean' } },
   trash: { rev: { type: 'string' } },
-  base: { view: { type: 'string' }, limit: { type: 'string' } },
+  base: { view: { type: 'string' }, limit: { type: 'string' }, cursor: { type: 'string' } },
   mcp: { 'read-only': { type: 'boolean' }, tools: { type: 'string' } },
   doctor: {},
 };
@@ -105,6 +105,9 @@ export async function clientMain(argv: string[], io: IO): Promise<number | null>
   let json = argv.includes('--json');
   try {
     if (!cmd || !(cmd in OPTIONS)) throw new UsageError(`Unknown command: ${cmd}`);
+    if (rest.some((a) => a === '--token' || a.startsWith('--token='))) {
+      throw new UsageError('There is no --token option: set SPALL_TOKEN in the environment, so the token stays out of argv');
+    }
     const options = { ...COMMON, ...OPTIONS[cmd] };
     const { values: v, positionals: pos } = parseArgs({ args: joinValues(rest, options), allowPositionals: true, options });
     json = v.json === true;
@@ -113,8 +116,9 @@ export async function clientMain(argv: string[], io: IO): Promise<number | null>
       return 0;
     }
     const url = (v.url as string | undefined) ?? io.env.SPALL_URL;
-    const token = (v.token as string | undefined) ?? io.env.SPALL_TOKEN;
-    if (!url || !token) throw new UsageError('Set SPALL_URL and SPALL_TOKEN (or pass --url and --token)');
+    // The token only comes from the environment, never argv (process listings, shell history).
+    const token = io.env.SPALL_TOKEN;
+    if (!url || !token) throw new UsageError('Set SPALL_TOKEN, and SPALL_URL (or pass --url)');
     const caller = fetchCaller(url, token, io.fetch);
     const ctx = { caller, io, json, url };
     return await COMMANDS[cmd]!(ctx, v as Values, pos);
@@ -288,7 +292,8 @@ const COMMANDS: Record<string, Command> = {
     let ops: Record<string, unknown>[] = [];
     if (v.ops !== undefined) {
       try {
-        ops = JSON.parse(await textArg(ctx, v.ops as string));
+        const src = v.ops as string;
+        ops = JSON.parse(src === '-' ? await ctx.io.stdin() : await readFile(src, 'utf8'));
       } catch (e) {
         throw new UsageError(`--ops: ${(e as Error).message}`);
       }
@@ -326,7 +331,7 @@ const COMMANDS: Record<string, Command> = {
   },
 
   async base(ctx, v, pos) {
-    const d = await tool(ctx, 'spall_query_base', { base: arg(pos, 0, 'file.base'), view: v.view, limit: int(v.limit as string, 'limit') });
+    const d = await tool(ctx, 'spall_query_base', { base: arg(pos, 0, 'file.base'), view: v.view, limit: int(v.limit as string, 'limit'), cursor: v.cursor });
     const cols = (d.columns as { key: string; name: string }[]) ?? [];
     const rows = d.results as { path: string; values: Record<string, unknown> }[];
     const cell = (x: unknown) => (x === null || x === undefined ? '' : typeof x === 'string' ? x : JSON.stringify(x));

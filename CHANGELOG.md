@@ -11,7 +11,7 @@ Agents can use Spall directly, over MCP or a CLI, with the same tokens and folde
   - Writes made through `/mcp` are audited with `via: mcp/<tool>`.
   - A `spall_edit` call counts as two REST calls against the rate limit; the `/mcp` request itself isn't counted.
   - New config: `mcp: {enabled, allowed_origins, fence_untrusted}`; per account, `mcp: {read_only, tools, fence_untrusted}`.
-- **Client CLI:** `spall whoami | search | ls | tags | read | new | edit | mv | trash | base | doctor` against a server. Credentials come from `SPALL_URL` + `SPALL_TOKEN` (or `--url` / `--token`). `--json` works everywhere, and the exit codes are documented.
+- **Client CLI:** `spall whoami | search | ls | tags | read | new | edit | mv | trash | base | doctor` against a server. Credentials come from `SPALL_URL` (or `--url`) and `SPALL_TOKEN`; the token is never taken from the command line. `--json` works everywhere, and the exit codes are documented.
 - **`spall mcp`:** the same tools over stdio for clients that only run local commands (e.g. `npx -y spall mcp` in Claude Desktop).
 - **npm:** published as `spall` (`npm i -g spall`, `npx -y spall …`), with provenance, from a tag workflow.
 - **Agent skill:** `skills/spall/SKILL.md`.

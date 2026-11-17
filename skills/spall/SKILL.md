@@ -7,7 +7,7 @@ description: Read, search and edit an Obsidian vault through Spall with the `spa
 
 `spall` talks to a Spall server: a REST API over an Obsidian vault where your token sees only the folders it is granted. Anything outside them doesn't exist for you (exit 3, same as a missing note).
 
-**Setup:** `SPALL_URL` (e.g. `http://127.0.0.1:8787`) and `SPALL_TOKEN` (`spl_…`) in the environment, or `--url` / `--token`. Install with `npm i -g spall`, or run `npx -y spall <command>`. `spall doctor` checks both.
+**Setup:** `SPALL_URL` (e.g. `http://127.0.0.1:8787`) and `SPALL_TOKEN` (`spl_…`) in the environment (`--url` can replace `SPALL_URL`; the token is read only from `SPALL_TOKEN`, never pass it as an argument). Install with `npm i -g spall`, or run `npx -y spall <command>`. `spall doctor` checks both.
 
 Paths are relative to your root; `.md` is optional. Add `--json` to any command for machine-readable output.
 
@@ -26,6 +26,7 @@ spall edit "Notes/Some note" --rev <rev> --append-to "Notes > Highlights" --cont
 spall edit "Notes/Some note" --rev <rev> --set status=done --replace "old text" --with "new text"
 spall mv "Inbox/A title" "Projects/A title"
 spall trash "Inbox/A title"                    # to the vault trash, never permanent
+spall base "Tasks.base" [--view V] [--cursor C] # a Bases view; follow "(more: --cursor …)" for the next page
 ```
 
 `spall <command> --help` shows the options of one command.

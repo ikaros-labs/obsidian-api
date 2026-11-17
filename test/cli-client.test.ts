@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/client';
@@ -39,12 +39,20 @@ describe('spall client commands', () => {
     expect(JSON.parse(j.out)).toMatchObject({ account: 'agent', mcp: { enabled: true } });
   });
 
-  it('takes --url/--token instead of the environment, and needs one of them', async () => {
-    const r = await spall(null, ['whoami', '--url', 'http://spall.test', '--token', 'tok-eink']);
-    expect(r.out).toContain('account: eink');
-    const none = await spall(null, ['whoami']);
-    expect(none.code).toBe(2);
-    expect(none.err).toContain('SPALL_URL');
+  it('takes the token only from SPALL_TOKEN; --url can replace SPALL_URL', async () => {
+    const run = (argv: string[], env: Record<string, string>) =>
+      clientMain(argv, { env, out: () => {}, err: (s) => (err += s), stdin: async () => '', fetch: injectFetch(env_) });
+    let err = '';
+    const env_ = env;
+    expect(await run(['whoami', '--url', 'http://spall.test'], { SPALL_TOKEN: 'tok-eink' })).toBe(0);
+    // --token is not an option: the token must never be in argv
+    err = '';
+    expect(await run(['whoami', '--url', 'http://spall.test', '--token', 'tok-eink'], {})).toBe(2);
+    expect(err).toContain('There is no --token option: set SPALL_TOKEN');
+    err = '';
+    expect(await run(['whoami', '--url', 'http://spall.test'], {})).toBe(2);
+    expect(err).toContain('SPALL_TOKEN');
+    expect((await spall(null, ['whoami'])).code).toBe(2);
   });
 
   it('search, search --related, ls, tags', async () => {
@@ -86,11 +94,19 @@ describe('spall client commands', () => {
     expect(stale.err).toContain('current_rev');
   });
 
-  it('edit --ops reads a JSON array of ops', async () => {
+  it('edit --ops reads a JSON array of ops from stdin (-) or a file', async () => {
     const r = await spall('agent', ['edit', 'Research/inbox/Draft', '--ops', '-'], JSON.stringify([{ op: 'append', content: 'more' }]));
     expect(r.err).toBe('');
     expect(r.code).toBe(0);
     expect(note('Research/inbox/Draft.md')).toBe('Draft text.\nmore\n');
+    const file = path.join(env.dir, 'ops.json');
+    writeFileSync(file, JSON.stringify([{ op: 'append', content: 'from a file' }]));
+    const f = await spall('agent', ['edit', 'Research/inbox/Draft', '--ops', file]);
+    expect(f).toMatchObject({ code: 0, err: '' });
+    expect(note('Research/inbox/Draft.md')).toBe('Draft text.\nmore\nfrom a file\n');
+    const missing = await spall('agent', ['edit', 'Research/inbox/Draft', '--ops', path.join(env.dir, 'nope.json')]);
+    expect(missing.code).toBe(2);
+    expect(missing.err).toContain('--ops: ENOENT');
     expect((await spall('agent', ['edit', 'Research/inbox/Draft'])).code).toBe(2);
     expect((await spall('agent', ['edit', 'Research/inbox/Draft', '--append-to', 'X'])).code).toBe(2);
   });
@@ -104,6 +120,20 @@ describe('spall client commands', () => {
   it('base: a missing .base file exits 3', async () => {
     const r = await spall('agent', ['base', 'Nope.base']);
     expect(r.code).toBe(3);
+  });
+
+  it('base pages with --cursor', async () => {
+    writeFileSync(path.join(env.vault, 'Research/All.base'), 'views:\n  - type: table\n    name: All\n    order: [file.name]\n');
+    const first = await spall('agent', ['base', 'Research/All', '--limit', '1', '--json']);
+    expect(first.code).toBe(0);
+    const p1 = JSON.parse(first.out);
+    expect(p1.next_cursor).toBeTruthy();
+    const human = await spall('agent', ['base', 'Research/All', '--limit', '1']);
+    expect(human.out).toContain(`(more: --cursor ${p1.next_cursor})`);
+    const second = await spall('agent', ['base', 'Research/All', '--limit', '1', '--cursor', p1.next_cursor, '--json']);
+    expect(second.code).toBe(0);
+    const p2 = JSON.parse(second.out);
+    expect(p2.results[0].path).not.toBe(p1.results[0].path);
   });
 
   it('exit codes: 3 not found (hidden or missing), 4 forbidden, 6 rate limited, 7 auth, 2 usage', async () => {

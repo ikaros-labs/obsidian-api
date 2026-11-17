@@ -14,7 +14,7 @@ async function readStdin(): Promise<string> {
 }
 
 /** Options that take a value, so their value isn't mistaken for the command. */
-const VALUE_OPTIONS = new Set(['-c', '--config', '--url', '--token']);
+const VALUE_OPTIONS = new Set(['-c', '--config', '--url']);
 
 /** The command is the first positional: `spall -c spall.yaml check` works as well as `spall check -c …`. */
 function splitCommand(args: string[]): [string | undefined, string[]] {
