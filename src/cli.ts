@@ -13,8 +13,20 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-const argv = process.argv.slice(2);
-const cmd = argv[0];
+/** Options that take a value, so their value isn't mistaken for the command. */
+const VALUE_OPTIONS = new Set(['-c', '--config', '--url', '--token']);
+
+/** The command is the first positional: `spall -c spall.yaml check` works as well as `spall check -c …`. */
+function splitCommand(args: string[]): [string | undefined, string[]] {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (VALUE_OPTIONS.has(a)) i++;
+    else if (!a.startsWith('-')) return [a, [a, ...args.slice(0, i), ...args.slice(i + 1)]];
+  }
+  return [undefined, args];
+}
+
+const [cmd, argv] = splitCommand(process.argv.slice(2));
 
 if (cmd !== undefined && ADMIN_COMMANDS.includes(cmd)) {
   adminMain(argv).catch((e) => {
@@ -30,7 +42,7 @@ if (cmd !== undefined && ADMIN_COMMANDS.includes(cmd)) {
   }).then((code) => {
     if (code !== null) process.exitCode = code;
   });
-} else if (cmd === undefined || cmd === '--help' || cmd === '-h' || cmd === 'help') {
+} else if (cmd === undefined || cmd === 'help') {
   console.log(USAGE);
 } else {
   console.error(`spall: unknown command ${cmd}\n\n${USAGE}`);
