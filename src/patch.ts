@@ -87,6 +87,8 @@ interface Region {
   start: number;
   end: number;
   followed: boolean;
+  /** Offset of the heading line itself. */
+  headingStart: number;
 }
 
 function headingRegion(body: string, lines: Line[], target: Extract<Target, { heading: string[] }>): Region {
@@ -112,10 +114,34 @@ function headingRegion(body: string, lines: Line[], target: Extract<Target, { he
     }
   }
   return {
+    headingStart: lines[h.line]!.start,
     start: lines[h.line]!.next,
     end: endLine < lines.length ? lines[endLine]!.start : body.length,
     followed: endLine < lines.length,
   };
+}
+
+/**
+ * A heading's section (the heading line through the line before the next heading of the same or a
+ * higher level), matched exactly like PATCH targets: same ambiguity and not-found errors.
+ */
+export function readSection(text: string, heading: string[], index?: number): string {
+  const { body } = splitFrontmatter(text);
+  const r = headingRegion(body, scanLines(body), { heading, index });
+  return body.slice(r.headingStart, r.end);
+}
+
+const TABLE_ROW_RE = /^\s*\|/;
+const UNDERLINE_RE = /^ {0,3}(=+|-+)[ \t]*$/;
+
+/**
+ * Whether appended text needs a blank line after `prev` to keep its meaning: a `---` or `===` right
+ * under a paragraph would turn it into a heading, and text right under a table becomes a row.
+ */
+function needsBlankLine(prev: string, next: string): boolean {
+  if (prev.trim() === '' || headingOf({ text: prev, start: 0, next: 0, code: false })) return false;
+  if (UNDERLINE_RE.test(next)) return true;
+  return TABLE_ROW_RE.test(prev) && !TABLE_ROW_RE.test(next);
 }
 
 function applyRegion(body: string, region: Region, op: 'append' | 'prepend' | 'replace', content: string): string {
@@ -135,7 +161,8 @@ function applyRegion(body: string, region: Region, op: 'append' | 'prepend' | 'r
     return before + withNl(content) + inside + after;
   }
   const tail = inside.slice(trimmed.length);
-  return before + trimmed + '\n' + withoutNl(content) + (tail === '' ? (content.endsWith('\n') ? '\n' : '') : tail) + after;
+  const sep = needsBlankLine(trimmed.slice(trimmed.lastIndexOf('\n') + 1), content.split('\n')[0]!) ? '\n\n' : '\n';
+  return before + trimmed + sep + withoutNl(content) + (tail === '' ? (content.endsWith('\n') ? '\n' : '') : tail) + after;
 }
 
 function applyBlockOp(body: string, lines: Line[], id: string, op: 'append' | 'prepend' | 'replace', content: string): string {
@@ -176,7 +203,7 @@ function applyContentOp(text: string, op: Extract<PatchOp, { op: 'append' | 'pre
   let next: string;
   if (!op.target) {
     if (op.op === 'replace') next = op.content;
-    else next = applyRegion(body, { start: 0, end: body.length, followed: false }, op.op, op.content);
+    else next = applyRegion(body, { start: 0, end: body.length, followed: false, headingStart: 0 }, op.op, op.content);
   } else {
     const lines = scanLines(body);
     if ('heading' in op.target) next = applyRegion(body, headingRegion(body, lines, op.target), op.op, op.content);
