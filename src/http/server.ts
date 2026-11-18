@@ -2,15 +2,23 @@ import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import type { Account } from '../config.js';
 import { ApiError } from '../errors.js';
+import { INJECT_HEADER, isInjected, VIA_HEADER } from '../mcp/caller.js';
 import { hashToken, isExpired } from '../tokens.js';
 import { baseRoutes } from './bases.js';
 import { Ctx, sendError, type Services } from './context.js';
 import { fileRoutes } from './files.js';
 import { folderRoutes } from './folders.js';
+import { mcpRoutes } from './mcp.js';
 import { noteRoutes } from './notes.js';
-import { doc, registerOpenApi } from './openapi.js';
+import { doc, registerOpenApi, version } from './openapi.js';
 import { searchRoutes } from './search.js';
 import { statsRoutes } from './stats.js';
+
+/** Routes that need a bearer token: the REST API and the MCP endpoint. */
+export function isAuthed(url: string): boolean {
+  const pathname = url.split('?')[0]!;
+  return url.startsWith('/v1/') || pathname === '/v1' || pathname === '/mcp';
+}
 
 /** Longest accepted request URL (path plus query string). */
 const MAX_URL = 16 * 1024;
@@ -51,20 +59,28 @@ export function buildServer(s: Services, opts: { logger?: FastifyServerOptions['
   const limiter = new RateLimiter();
 
   app.decorateRequest('auth', null);
+  app.decorateRequest('via', null);
 
   app.addContentTypeParser(['text/markdown', 'text/plain'], { parseAs: 'string' }, (_req, body, done) => done(null, body));
 
   app.addHook('onRequest', async (req) => {
     if (req.url.length > MAX_URL) throw new ApiError(414, 'invalid_request', `URL is longer than ${MAX_URL} characters`);
-    if (!req.url.startsWith('/v1/') && req.url.split('?')[0] !== '/v1') return;
+    if (!isAuthed(req.url)) return;
+    const mcp = req.url.split('?')[0] === '/mcp';
+    if (mcp && !s.config().mcp.enabled) throw new ApiError(404, 'not_found', 'No such endpoint');
     const m = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.authorization ?? '');
     if (!m) throw new ApiError(401, 'unauthorized', 'Missing bearer token');
     const found = s.config().tokensByHash.get(hashToken(m[1]!));
     if (!found) throw new ApiError(401, 'unauthorized', 'Invalid token');
     if (isExpired(found.token.expires)) throw new ApiError(401, 'unauthorized', 'Token expired');
-    const wait = limiter.take(found.account);
+    // An MCP request isn't counted itself: the REST calls its tools make are.
+    const wait = mcp ? 0 : limiter.take(found.account);
     if (wait > 0) throw new ApiError(429, 'rate_limited', `Rate limit of ${found.account.rateLimit.spec} exceeded`, { retry_after: wait });
     req.auth = found;
+    if (isInjected(req.headers[INJECT_HEADER])) {
+      const via = req.headers[VIA_HEADER];
+      if (typeof via === 'string') req.via = via;
+    }
   });
 
   app.setErrorHandler((err, req, reply) => {
@@ -105,7 +121,7 @@ export async function openApiDocument() {
 }
 
 function routes(app: FastifyInstance, s: Services) {
-  app.get('/healthz', { schema: doc({ summary: 'Liveness check', tag: 'System', public: true }) }, async () => ({ ok: true }));
+  app.get('/healthz', { schema: doc({ summary: 'Liveness check', tag: 'System', public: true }) }, async () => ({ ok: true, version }));
 
   app.get('/openapi.json', { schema: doc({ summary: 'This OpenAPI document', tag: 'System', public: true }) }, async () => app.swagger());
 
@@ -119,6 +135,7 @@ function routes(app: FastifyInstance, s: Services) {
       access: a.grants,
       rate_limit: a.rateLimit.spec,
       token: { name: ctx.token.name, expires: ctx.token.expires ?? null },
+      mcp: { enabled: s.config().mcp.enabled, ...a.mcp },
     };
   });
 
@@ -127,5 +144,6 @@ function routes(app: FastifyInstance, s: Services) {
   baseRoutes(app, s);
   searchRoutes(app, s);
   statsRoutes(app, s);
+  mcpRoutes(app, s);
   app.register(async (scope) => fileRoutes(scope, s));
 }

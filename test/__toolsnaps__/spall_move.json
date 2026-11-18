@@ -1,0 +1,40 @@
+{
+  "name": "spall_move",
+  "title": "Move or rename a note",
+  "description": "Moves or renames a note. Needs update+delete on the source and create on the destination. Links in other notes are not rewritten.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Note path relative to your root; \".md\" optional"
+      },
+      "destination": {
+        "type": "string",
+        "minLength": 1,
+        "description": "New note path relative to your root"
+      },
+      "on_conflict": {
+        "default": "fail",
+        "type": "string",
+        "enum": [
+          "fail",
+          "rename"
+        ]
+      }
+    },
+    "required": [
+      "path",
+      "destination"
+    ],
+    "$schema": "https://json-schema.org/draft/2020-12/schema"
+  },
+  "annotations": {
+    "title": "Move or rename a note",
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "idempotentHint": false,
+    "openWorldHint": false
+  }
+}

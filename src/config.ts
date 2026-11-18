@@ -4,6 +4,7 @@ import { parseDocument } from 'yaml';
 import { z } from 'zod';
 import { AccountAccessSchema, compileAccess, parseExclude, tryPath as tryPathInto, type Access, type Perm } from './access.js';
 import { ConfigError } from './errors.js';
+import { TOOL_NAMES } from './mcp/names.js';
 import { hasDotSegment, join } from './paths.js';
 
 const RATE_RE = /^(\d+)\/(sec|min|hour)$/;
@@ -37,10 +38,18 @@ const StatsSchema = z
   })
   .prefault({});
 
+/** Per-account MCP narrowing. It can only hide tools; the REST checks stay the security boundary. */
+const AccountMcpSchema = z.strictObject({
+  read_only: z.boolean().default(false),
+  tools: z.array(z.enum(TOOL_NAMES)).optional(),
+  fence_untrusted: z.boolean().optional(),
+});
+
 const AccountSchema = z.strictObject({
   description: z.string().optional(),
   ...AccountAccessSchema,
   rate_limit: RateSchema.optional(),
+  mcp: AccountMcpSchema.optional(),
   tokens: z.array(TokenSchema).default([]),
 });
 
@@ -63,6 +72,15 @@ export const ConfigSchema = z.strictObject({
   }),
   audit: z.strictObject({ path: z.string().min(1) }).optional(),
   stats: StatsSchema,
+  mcp: z
+    .strictObject({
+      enabled: z.boolean().default(true),
+      /** Browser Origins allowed to call /mcp. Requests without an Origin (CLIs, agents) are always allowed. */
+      allowed_origins: z.array(z.string()).default([]),
+      /** Wrap note bodies in <untrusted-content> markers. */
+      fence_untrusted: z.boolean().default(true),
+    })
+    .prefault({}),
   defaults: z.strictObject({ rate_limit: RateSchema.default('120/min') }).prefault({}),
   accounts: z.record(z.string().regex(/^[a-z0-9][a-z0-9_-]*$/i, 'letters, digits, "_" and "-" only'), AccountSchema).default({}),
 });
@@ -91,7 +109,21 @@ export interface Account {
   /** Grants as written, for /me and the CLI. */
   grants: { path: string; permissions: Perm[] }[];
   rateLimit: RateLimit;
+  /** Per-account MCP narrowing, with the server default for fencing filled in. */
+  mcp: AccountMcp;
   tokens: TokenInfo[];
+}
+
+export interface AccountMcp {
+  read_only: boolean;
+  tools: string[] | null;
+  fence_untrusted: boolean;
+}
+
+export interface McpConfig {
+  enabled: boolean;
+  allowedOrigins: string[];
+  fenceUntrusted: boolean;
 }
 
 export interface Config {
@@ -104,6 +136,7 @@ export interface Config {
   auditPath: string | null;
   propertyTypes: Record<string, ObsidianType>;
   stats: StatsConfig;
+  mcp: McpConfig;
   accounts: Map<string, Account>;
   tokensByHash: Map<string, { account: Account; token: TokenInfo }>;
 }
@@ -219,6 +252,11 @@ export function compileConfig(raw: RawConfig, configPath: string): Config {
       access: compiled.access,
       grants: compiled.grants,
       rateLimit: parseRate(a.rate_limit ?? raw.defaults.rate_limit),
+      mcp: {
+        read_only: a.mcp?.read_only ?? false,
+        tools: a.mcp?.tools ?? null,
+        fence_untrusted: a.mcp?.fence_untrusted ?? raw.mcp.fence_untrusted,
+      },
       tokens: a.tokens,
     };
     accounts.set(name, account);
@@ -243,6 +281,7 @@ export function compileConfig(raw: RawConfig, configPath: string): Config {
     auditPath,
     propertyTypes: raw.vault.property_types,
     stats,
+    mcp: { enabled: raw.mcp.enabled, allowedOrigins: raw.mcp.allowed_origins, fenceUntrusted: raw.mcp.fence_untrusted },
     accounts,
     tokensByHash,
   };

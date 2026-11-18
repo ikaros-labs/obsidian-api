@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.1.0 — unreleased
+
+Agents can use Spall directly, over MCP or a CLI, with the same tokens and folder scoping as REST.
+
+- **MCP endpoint `POST /mcp`** (Streamable HTTP, stateless; 2026-07-28 and 2025-era clients). Nine tools: `spall_whoami`, `spall_search`, `spall_list`, `spall_read`, `spall_query_base`, `spall_create`, `spall_edit`, `spall_move`, `spall_trash`.
+  - Each tool call goes through the REST routes in-process, so auth, scoping, rate limits, rev checks and the audit log are the REST ones.
+  - An account sees only the tools its grants allow. `?read_only=1&tools=…` and a per-account `mcp:` block can hide more, never add.
+  - Note bodies are wrapped in `<untrusted-content>` markers (`mcp.fence_untrusted`, on by default).
+  - Writes made through `/mcp` are audited with `via: mcp/<tool>`.
+  - A `spall_edit` call counts as two REST calls against the rate limit; the `/mcp` request itself isn't counted.
+  - New config: `mcp: {enabled, allowed_origins, fence_untrusted}`; per account, `mcp: {read_only, tools, fence_untrusted}`.
+- **Client CLI:** `spall whoami | search | ls | tags | read | new | edit | mv | trash | base | doctor` against a server. Credentials come from `SPALL_URL` (or `--url`) and `SPALL_TOKEN`; the token is never taken from the command line. `--json` works everywhere, and the exit codes are documented.
+- **`spall mcp`:** the same tools over stdio for clients that only run local commands (e.g. `npx -y @ikaros-labs/spall mcp` in Claude Desktop).
+- **npm:** published as `@ikaros-labs/spall` (`npm i -g @ikaros-labs/spall`, `npx -y @ikaros-labs/spall …`; the command stays `spall`, and the access module is `@ikaros-labs/spall/access`), with provenance, from a tag workflow using npm trusted publishing (OIDC, no token). The first version is published once by hand, then trusted publishing is configured on npmjs.com for `ikaros-labs/spall`, workflow `npm.yml`.
+- **Agent skill:** `skills/spall/SKILL.md`.
+- **Fix:** `PATCH` append keeps the markdown structure. It adds a blank line before an appended `---`/`===` (it turned the paragraph above into a heading) and before text appended after a table (it became a table row).
+- `/v1/me` includes the account's `mcp` settings, and `/healthz` returns the server version.
+
 ## 1.0.0 — 2026-11-16
 
 First public release. Formerly developed as `obsidian-api` (internally `vault-api`).

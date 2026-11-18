@@ -4,7 +4,7 @@ import { accessFromConfig, ConfigError, parsePlainPath } from '../src/access.js'
 import { compileConfig, parseConfigText } from '../src/config.js';
 import { FIXTURE } from './helpers.js';
 
-describe('spall/access export', () => {
+describe('@ikaros-labs/spall/access export', () => {
   it('bundles for the browser without node:*, chokidar or fastify', async () => {
     const r = await build({
       entryPoints: ['src/access.ts'],

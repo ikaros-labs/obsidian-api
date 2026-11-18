@@ -1,0 +1,50 @@
+{
+  "name": "spall_read",
+  "title": "Read a note",
+  "description": "Reads a note and its rev. view=markdown (default) returns the text; view=outline returns headings, block ids and frontmatter keys without the body (a cheap way to get the rev); view=frontmatter returns properties and tags; view=section returns one heading's section. Long notes are cut at max_chars.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Note path relative to your root; \".md\" optional"
+      },
+      "view": {
+        "default": "markdown",
+        "type": "string",
+        "enum": [
+          "markdown",
+          "outline",
+          "frontmatter",
+          "section"
+        ]
+      },
+      "heading": {
+        "description": "For view=section: heading path like \"Notes > Highlights\"",
+        "type": "string"
+      },
+      "index": {
+        "description": "For view=section: which match, when the heading is ambiguous",
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "max_chars": {
+        "default": 20000,
+        "type": "integer",
+        "minimum": 500,
+        "maximum": 200000
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "$schema": "https://json-schema.org/draft/2020-12/schema"
+  },
+  "annotations": {
+    "title": "Read a note",
+    "readOnlyHint": true,
+    "openWorldHint": false
+  }
+}

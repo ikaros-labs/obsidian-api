@@ -1,191 +1,50 @@
 #!/usr/bin/env node
-import { readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
-import path from 'node:path';
-import { parseArgs } from 'node:util';
-import { isSeq, parseDocument } from 'yaml';
-import { PERMS } from './access.js';
-import { createApp } from './app.js';
-import { ConfigManager, compileConfig, loadConfig, parseConfigText, type Config } from './config.js';
-import { ConfigError } from './errors.js';
-import { join, parsePlainPath } from './paths.js';
-import { expiryTime, generateToken, hashToken, isExpired } from './tokens.js';
+import { ADMIN_COMMANDS, ADMIN_USAGE, adminMain } from './cli/admin.js';
+import { CLIENT_COMMANDS, CLIENT_USAGE, clientMain } from './cli/client.js';
 
-const USAGE = `Usage: spall <command> [options]
+const USAGE = `Usage: spall <command> [options]   (spall <command> --help)
 
-Commands:
-  serve                                 Start the server
-  check                                 Validate the config and print each account's access
-  explain <account> <path>              Show what an account may do with a path (relative to its root)
-  token create <account> [--name n] [--expires YYYY-MM-DD]
-  token list [account]
-  token revoke <account> <name>
+${CLIENT_USAGE}
+${ADMIN_USAGE}`;
 
-Options:
-  -c, --config <path>   Config file (default: $SPALL_CONFIG or ./spall.yaml)
-`;
-
-function fail(message: string): never {
-  console.error(message);
-  process.exit(1);
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const c of process.stdin) chunks.push(c as Buffer);
+  return Buffer.concat(chunks).toString('utf8');
 }
 
-function load(configPath: string): Config {
-  try {
-    return loadConfig(configPath);
-  } catch (e) {
-    fail(e instanceof ConfigError ? e.message : String(e));
+/** Options that take a value, so their value isn't mistaken for the command. */
+const VALUE_OPTIONS = new Set(['-c', '--config', '--url']);
+
+/** The command is the first positional: `spall -c spall.yaml check` works as well as `spall check -c …`. */
+function splitCommand(args: string[]): [string | undefined, string[]] {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (VALUE_OPTIONS.has(a)) i++;
+    else if (!a.startsWith('-')) return [a, [a, ...args.slice(0, i), ...args.slice(i + 1)]];
   }
+  return [undefined, args];
 }
 
-function account(cfg: Config, name: string | undefined) {
-  if (!name) fail(USAGE);
-  return cfg.accounts.get(name) ?? fail(`No such account: ${name}`);
-}
+const [cmd, argv] = splitCommand(process.argv.slice(2));
 
-const today = () => new Date().toISOString().slice(0, 10);
-
-/** Edits the config YAML in place (keeping comments), validates the result, then writes it atomically. */
-function editConfig(configPath: string, edit: (doc: ReturnType<typeof parseDocument>) => void) {
-  const doc = parseDocument(readFileSync(configPath, 'utf8'));
-  edit(doc);
-  const text = String(doc);
-  try {
-    compileConfig(parseConfigText(text), configPath);
-  } catch (e) {
-    fail(e instanceof ConfigError ? e.message : String(e));
-  }
-  const tmp = path.join(path.dirname(configPath), `.${path.basename(configPath)}.${process.pid}.tmp`);
-  writeFileSync(tmp, text, { mode: statSync(configPath).mode });
-  renameSync(tmp, configPath);
-}
-
-async function serve(configPath: string) {
-  const configs = (() => {
-    try {
-      return ConfigManager.load(configPath);
-    } catch (e) {
-      fail(e instanceof ConfigError ? e.message : String(e));
-    }
-  })();
-  const app = await createApp(configs, { watch: true, logger: { level: process.env.LOG_LEVEL ?? 'info' } });
-  const { host, port } = configs.current.server;
-  await app.server.listen({ host, port });
-  app.server.log.info(`Serving ${configs.current.vaultPath} (${app.index.size} entries indexed)`);
-  configs.watch();
-  process.on('SIGHUP', () => configs.reload());
-  const stop = async () => {
-    configs.close();
-    await app.close();
-    process.exit(0);
-  };
-  process.on('SIGINT', stop);
-  process.on('SIGTERM', stop);
-}
-
-function check(cfg: Config) {
-  console.log(`Config OK: ${cfg.configPath}`);
-  console.log(`Vault: ${cfg.vaultPath}`);
-  for (const a of cfg.accounts.values()) {
-    const active = a.tokens.filter((t) => !isExpired(t.expires)).length;
-    console.log(`\n${a.name}${a.description ? ` (${a.description})` : ''}`);
-    console.log(`  root: ${a.rootPath === '' ? '(vault root)' : a.rootPath}`);
-    console.log(`  rate limit: ${a.rateLimit.spec}`);
-    console.log(`  tokens: ${active} active, ${a.tokens.length - active} expired`);
-    for (const g of a.grants) console.log(`  ${g.path}: ${g.permissions.join(', ') || 'none'}`);
-  }
-}
-
-function explain(cfg: Config, name: string | undefined, p: string | undefined) {
-  const a = account(cfg, name);
-  if (p === undefined) fail(USAGE);
-  const segs = [...a.root, ...parsePlainPath(p)];
-  const d = a.access.decide(segs);
-  const perms = PERMS.filter((x) => d.perms.has(x));
-  const why = {
-    grant: `key: ${d.key}`,
-    no_grant: 'no matching key',
-    outside_root: 'outside the account root',
-    dotfile: 'dotfiles and dot-folders are always denied',
-    excluded: `vault.exclude: ${d.key}`,
-  }[d.reason];
-  console.log(`${p} → ${perms.join(', ') || 'none'} (${why})`);
-  if (!d.perms.has('read') && a.access.leadsToReadable(segs)) {
-    console.log('  listed as a parent folder, showing only the branches the account can read');
-  }
-  console.log(`  vault path: ${join(segs) || '(vault root)'}`);
-}
-
-async function main() {
-  const { values, positionals } = parseArgs({
-    allowPositionals: true,
-    options: {
-      config: { type: 'string', short: 'c' },
-      name: { type: 'string' },
-      expires: { type: 'string' },
-      help: { type: 'boolean', short: 'h' },
-    },
+if (cmd !== undefined && ADMIN_COMMANDS.includes(cmd)) {
+  adminMain(argv).catch((e) => {
+    console.error(e instanceof Error ? (e.stack ?? e.message) : String(e));
+    process.exit(1);
   });
-  const [cmd, ...args] = positionals;
-  if (values.help || !cmd) {
-    console.log(USAGE);
-    return;
-  }
-  const configPath = path.resolve(values.config ?? process.env.SPALL_CONFIG ?? 'spall.yaml');
-
-  switch (cmd) {
-    case 'serve':
-      return serve(configPath);
-    case 'check':
-      return check(load(configPath));
-    case 'explain':
-      return explain(load(configPath), args[0], args[1]);
-    case 'token': {
-      const [sub, accountName, tokenName] = args;
-      const cfg = load(configPath);
-      if (sub === 'create') {
-        const a = account(cfg, accountName);
-        if (values.expires !== undefined && expiryTime(values.expires) === null) fail('--expires: expected YYYY-MM-DD');
-        const tokenNameNew = values.name ?? `token-${a.tokens.length + 1}`;
-        const token = generateToken();
-        editConfig(configPath, (doc) => {
-          const entry = {
-            name: tokenNameNew,
-            sha256: hashToken(token),
-            created: today(),
-            ...(values.expires ? { expires: values.expires } : {}),
-          };
-          const tokens = doc.getIn(['accounts', a.name, 'tokens']);
-          if (isSeq(tokens)) tokens.add(doc.createNode(entry));
-          else doc.setIn(['accounts', a.name, 'tokens'], doc.createNode([entry]));
-        });
-        console.error(`Created token "${tokenNameNew}" for ${a.name}. It is shown only once:`);
-        console.log(token);
-        return;
-      }
-      if (sub === 'list') {
-        const accounts = accountName ? [account(cfg, accountName)] : [...cfg.accounts.values()];
-        for (const a of accounts) {
-          for (const t of a.tokens) {
-            const status = isExpired(t.expires) ? 'expired' : 'active';
-            console.log(`${a.name}\t${t.name}\t${status}\tcreated ${t.created ?? '?'}\texpires ${t.expires ?? 'never'}`);
-          }
-        }
-        return;
-      }
-      if (sub === 'revoke') {
-        const a = account(cfg, accountName);
-        const idx = a.tokens.findIndex((t) => t.name === tokenName);
-        if (idx === -1) fail(`No token "${tokenName}" for ${a.name}`);
-        editConfig(configPath, (doc) => doc.deleteIn(['accounts', a.name, 'tokens', idx]));
-        console.log(`Revoked token "${tokenName}" for ${a.name}`);
-        return;
-      }
-      fail(USAGE);
-    }
-    // falls through
-    default:
-      fail(USAGE);
-  }
+} else if (cmd !== undefined && CLIENT_COMMANDS.includes(cmd)) {
+  clientMain(argv, {
+    env: process.env,
+    out: (s) => process.stdout.write(s),
+    err: (s) => process.stderr.write(s),
+    stdin: readStdin,
+  }).then((code) => {
+    if (code !== null) process.exitCode = code;
+  });
+} else if (cmd === undefined || cmd === 'help') {
+  console.log(USAGE);
+} else {
+  console.error(`spall: unknown command ${cmd}\n\n${USAGE}`);
+  process.exitCode = 2;
 }
-
-main().catch((e) => fail(e instanceof Error ? (e.stack ?? e.message) : String(e)));

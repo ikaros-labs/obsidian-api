@@ -94,7 +94,7 @@ export function expandLevel(level: Level | readonly Perm[]): Set<Perm> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Grants as written in the config. Used by config.ts and, through the `spall/access` export, by
+// Grants as written in the config. Used by config.ts and, through the `@ikaros-labs/spall/access` export, by
 // anything that wants the exact same rules without a server (e.g. the landing-page playground).
 
 export const LevelSchema = z.union([z.enum(Object.keys(LEVELS) as [Level, ...Level[]]), z.array(z.enum(PERMS)).min(1)]);

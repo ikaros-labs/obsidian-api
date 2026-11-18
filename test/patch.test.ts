@@ -121,3 +121,18 @@ it('reports which op failed', () => {
   expect(e.details?.op_index).toBe(1);
   expect(e.message).toMatch(/^ops\[1\]/);
 });
+
+describe('append keeps the markdown structure', () => {
+  it('a --- or === under a paragraph gets a blank line, so it is not a setext heading', () => {
+    expect(patch('# A\n\ntext\n', { op: 'append', target: { heading: ['A'] }, content: '---\nmore' })).toBe('# A\n\ntext\n\n---\nmore\n');
+    expect(patch('text\n', { op: 'append', content: '===' })).toBe('text\n\n===\n');
+    // under a heading or a blank line nothing changes
+    expect(patch('# A\n', { op: 'append', target: { heading: ['A'] }, content: '---' })).toBe('# A\n---\n');
+  });
+
+  it('text after a table gets a blank line; another row does not', () => {
+    const t = '## T\n\n| a |\n| - |\n| 1 |\n\n## U\n';
+    expect(patch(t, { op: 'append', target: { heading: ['T'] }, content: 'after' })).toBe('## T\n\n| a |\n| - |\n| 1 |\n\nafter\n\n## U\n');
+    expect(patch(t, { op: 'append', target: { heading: ['T'] }, content: '| 2 |' })).toBe('## T\n\n| a |\n| - |\n| 1 |\n| 2 |\n\n## U\n');
+  });
+});
