@@ -212,7 +212,7 @@ bearer_token_env_var = "SPALL_TOKEN"
   "mcpServers": {
     "spall": {
       "command": "npx",
-      "args": ["-y", "spall", "mcp"],
+      "args": ["-y", "@ikaros-labs/spall", "mcp"],
       "env": { "SPALL_URL": "http://127.0.0.1:8787", "SPALL_TOKEN": "spl_…" }
     }
   }
@@ -229,11 +229,11 @@ mcp_servers:
       Authorization: Bearer spl_…
 ```
 
-Any other stdio client: run `npx -y spall mcp` with `SPALL_URL` and `SPALL_TOKEN` set. Browser Origins are rejected unless listed in `mcp.allowed_origins`; requests without an Origin (CLIs, agents) are allowed.
+Any other stdio client: run `npx -y @ikaros-labs/spall mcp` with `SPALL_URL` and `SPALL_TOKEN` set. Browser Origins are rejected unless listed in `mcp.allowed_origins`; requests without an Origin (CLIs, agents) are allowed.
 
 ### CLI
 
-`npm i -g spall` (or `npx -y spall …`), then set `SPALL_URL` and `SPALL_TOKEN` in the environment (`--url` can replace `SPALL_URL`; the token is never taken from the command line, so it stays out of process listings and shell history). For shell agents (Claude Code, Codex, Hermes), [`skills/spall/SKILL.md`](skills/spall/SKILL.md) is a ready-made skill that teaches the commands below.
+`npm i -g @ikaros-labs/spall` (or `npx -y @ikaros-labs/spall …`; the command is `spall` either way), then set `SPALL_URL` and `SPALL_TOKEN` in the environment (`--url` can replace `SPALL_URL`; the token is never taken from the command line, so it stays out of process listings and shell history). For shell agents (Claude Code, Codex, Hermes), [`skills/spall/SKILL.md`](skills/spall/SKILL.md) is a ready-made skill that teaches the commands below.
 
 ```
 spall whoami                                   # root, grants, rate limit
@@ -402,11 +402,11 @@ npm run cli -- check -c spall.yaml
 The access rules are also published as a browser-safe module (no Node APIs), which the landing-page playground uses:
 
 ```sh
-npm i spall
+npm i @ikaros-labs/spall
 ```
 
 ```ts
-import { accessFromConfig, parsePlainPath } from 'spall/access';
+import { accessFromConfig, parsePlainPath } from '@ikaros-labs/spall/access';
 const access = accessFromConfig({ access: { Notes: 'read', 'Notes/Private': 'none' } });
 access.decide(parsePlainPath('Notes/Private/diary.md')); // { perms: Set {}, reason: 'grant', key: 'Notes/Private' }
 ```

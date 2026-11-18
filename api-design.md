@@ -660,6 +660,8 @@ A tool is shown when **one** grant includes every permission it needs. Then each
 ### Client CLI
 `spall whoami | search | ls | tags | read | new | edit | mv | trash | base | mcp | doctor` run the same tool handlers through `fetch`. Credentials come from `SPALL_URL` (or `--url`) and `SPALL_TOKEN`, which is read only from the environment. There is no `--token` flag, so the token stays out of argv, and no credential file yet. Output is human-readable, or JSON with `--json`. Exit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 forbidden, 5 rev conflict, 6 rate limited, 7 auth.
 
+The npm package is `@ikaros-labs/spall` (npm blocks the unscoped `spall` as too close to an existing name). Its bin is still `spall`, so `npm i -g @ikaros-labs/spall` installs the `spall` command and `npx -y @ikaros-labs/spall mcp` runs the stdio server. The browser-safe access module is `@ikaros-labs/spall/access`.
+
 ### Not in 1.1
 - OAuth: an OAuth 2.1 resource server, which Claude.ai and ChatGPT remote connectors need.
 - File and attachment tools, a stats tool, restore from trash, prompts and resources.
