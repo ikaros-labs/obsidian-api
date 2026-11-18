@@ -13,7 +13,7 @@ Agents can use Spall directly, over MCP or a CLI, with the same tokens and folde
   - New config: `mcp: {enabled, allowed_origins, fence_untrusted}`; per account, `mcp: {read_only, tools, fence_untrusted}`.
 - **Client CLI:** `spall whoami | search | ls | tags | read | new | edit | mv | trash | base | doctor` against a server. Credentials come from `SPALL_URL` (or `--url`) and `SPALL_TOKEN`; the token is never taken from the command line. `--json` works everywhere, and the exit codes are documented.
 - **`spall mcp`:** the same tools over stdio for clients that only run local commands (e.g. `npx -y spall mcp` in Claude Desktop).
-- **npm:** published as `spall` (`npm i -g spall`, `npx -y spall …`), with provenance, from a tag workflow.
+- **npm:** published as `spall` (`npm i -g spall`, `npx -y spall …`), with provenance, from a tag workflow using npm trusted publishing (OIDC, no token). The first version is published once by hand, then trusted publishing is configured on npmjs.com for `ikaros-labs/spall`, workflow `npm.yml`.
 - **Agent skill:** `skills/spall/SKILL.md`.
 - **Fix:** `PATCH` append keeps the markdown structure. It adds a blank line before an appended `---`/`===` (it turned the paragraph above into a heading) and before text appended after a table (it became a table row).
 - `/v1/me` includes the account's `mcp` settings, and `/healthz` returns the server version.

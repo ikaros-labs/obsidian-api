@@ -3,8 +3,9 @@ name: npm
 # Publishes the package to npm when a version tag (v1.2.3) is pushed. The tag must match
 # package.json. Provenance links the published tarball to this workflow run.
 #
-# Setup (once): add an npm automation token as the repository secret NPM_TOKEN, or configure
-# trusted publishing for this workflow on npmjs.com and drop NODE_AUTH_TOKEN.
+# Auth is npm trusted publishing (OIDC), no token. Setup (once): publish the first version by
+# hand, then configure trusted publishing on npmjs.com for ikaros-labs/spall, workflow npm.yml.
+# OIDC needs npm 11.5.1+, hence Node 24. No dependency cache: npm advises against it in release builds.
 
 on:
   push:
@@ -17,13 +18,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write   # npm provenance
+      id-token: write   # trusted publishing (OIDC) and provenance
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
-          cache: npm
+          node-version: 24
           registry-url: https://registry.npmjs.org
       - name: Tag matches package.json
         run: |
@@ -35,5 +35,3 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
