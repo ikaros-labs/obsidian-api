@@ -150,8 +150,9 @@ export async function clientMain(argv: string[], io: IO): Promise<number | null>
         .replace(/spall_(whoami|read|edit|trash)/g, 'spall $1')
         .replace(/spall_move/g, 'spall mv')
         .replace(/view=outline/g, '--outline');
-      // not_found suggestions are in the message already.
-      const details = e.details && e.code !== 'not_found' ? `\n${JSON.stringify(e.details, null, 2)}` : '';
+      // Suggestions, unknown properties and changed parameters are in the message already.
+      const { did_you_mean: _d, unknown_properties: _u, changed: _c, ...rest } = e.details ?? {};
+      const details = Object.keys(rest).length > 0 ? `\n${JSON.stringify(rest, null, 2)}` : '';
       if (json) io.err(`${JSON.stringify({ error: { code: e.code, message: e.message, ...(e.details ? { details: e.details } : {}) } })}\n`);
       else io.err(`spall: ${e.code}: ${e.message}${details}\n`);
       return EXIT[e.code] ?? 1;

@@ -35,8 +35,11 @@ export interface CursorKey {
   params: Record<string, string>;
 }
 
+/** Unset and empty parameters are left out, which keeps cursors short. */
+const isSet = (v: unknown) => v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && v.length === 0);
+
 export function cursorKey(scope: unknown[], params: Record<string, unknown> = {}): CursorKey {
-  return { scope: hash(scope, 12), params: Object.fromEntries(Object.entries(params).map(([k, v]) => [k, hash(v, 6)])) };
+  return { scope: hash(scope, 10), params: Object.fromEntries(Object.entries(params).filter(([, v]) => isSet(v)).map(([k, v]) => [k, hash(v, 4)])) };
 }
 
 export const encodeCursor = (offset: number, key: CursorKey) =>

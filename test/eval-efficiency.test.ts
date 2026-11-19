@@ -145,6 +145,8 @@ describe('item 5: frontmatter where/missing on listings', () => {
     expect(bad.isError).toBe(true);
     const cli = await spall('pm', ['ls', '1. Projects', '--where', 'Status=Done', '--missing', 'Completed']);
     expect(cli.out).toBe('"1. Projects/Pixel Clock.md"\n(1 entry: 1 note, 0 files, 0 folders)\n');
+    const badCli = await spall('pm', ['ls', '1. Projects', '--where', 'status=Done']);
+    expect(badCli).toMatchObject({ code: 1, err: 'spall: invalid_request: Unknown property "status" (did you mean "Status"? names are case-sensitive): no listed note has it\n' });
   });
 });
 
