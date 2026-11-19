@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Spall",
-    "version": "1.2.0",
+    "version": "1.2.1",
     "description": "Scoped REST API for an Obsidian vault: every account sees only the folders it is granted.",
     "license": {
       "name": "MIT",
@@ -79,7 +79,7 @@
     },
     "/v1/me": {
       "get": {
-        "summary": "The calling account, its root, grants and token",
+        "summary": "The calling account: root, effective grants, token, the MCP tools it sees and whether they fence note text",
         "tags": [
           "System"
         ],
@@ -940,7 +940,7 @@
             "in": "query",
             "name": "missing",
             "required": false,
-            "description": "Notes without this frontmatter property (repeatable)"
+            "description": "Notes where this frontmatter property is absent or empty (null, blank or []); repeatable"
           }
         ],
         "responses": {
@@ -1108,7 +1108,7 @@
             "in": "query",
             "name": "missing",
             "required": false,
-            "description": "Notes without this frontmatter property (repeatable)"
+            "description": "Notes where this frontmatter property is absent or empty (null, blank or []); repeatable"
           },
           {
             "schema": {

@@ -28,14 +28,26 @@ describe('auth', () => {
     expect((await env.req(null, { method: 'GET', url: '/healthz' })).statusCode).toBe(200);
   });
 
-  it('describes the account at /v1/me', async () => {
-    const res = await env.req('agent', { method: 'GET', url: '/v1/me' });
-    expect(res.json()).toMatchObject({
-      account: 'agent',
-      root: '',
-      access: expect.arrayContaining([{ path: 'Notes/Private', permissions: [] }, { path: 'Research', permissions: ['read', 'create', 'update'] }]),
-      token: { name: 'test', expires: null },
+  it('describes the account at /v1/me: effective grants and MCP tools', async () => {
+    const me = async (a: string) => (await env.req(a, { method: 'GET', url: '/v1/me' })).json();
+    const agent = await me('agent');
+    expect(agent).toMatchObject({ account: 'agent', root: '', token: { name: 'test', expires: null } });
+    // A hidden folder (no permissions) is left out, so it looks like a missing one.
+    expect(agent.access.map((g: { path: string }) => g.path)).not.toContain('Notes/Private');
+    expect(agent.access).toContainEqual({ path: 'Research', permissions: ['read', 'create', 'update'] });
+    expect(agent.mcp).toEqual({
+      enabled: true,
+      tools: ['spall_whoami', 'spall_search', 'spall_list', 'spall_read', 'spall_query_base', 'spall_create', 'spall_edit', 'spall_move', 'spall_trash'],
+      fenced: true,
     });
+    // Read-only: only read tools; no raw config fields.
+    const eink = await me('eink');
+    expect(eink.access).toEqual([{ path: 'Dashboards/eink.md', permissions: ['read'] }]);
+    expect(eink.mcp).toEqual({ enabled: true, tools: ['spall_whoami', 'spall_search', 'spall_list', 'spall_read', 'spall_query_base'], fenced: true });
+    // Create-only.
+    const dropbox = await me('dropbox');
+    expect(dropbox.access).toEqual([{ path: '.', permissions: ['create'] }]);
+    expect(dropbox.mcp).toEqual({ enabled: true, tools: ['spall_whoami', 'spall_create'], fenced: true });
   });
 
   it('rate-limits per account', async () => {

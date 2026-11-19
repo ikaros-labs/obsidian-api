@@ -14,11 +14,11 @@ Paths are relative to your root; `.md` is optional. Output prints paths in doubl
 ## Commands
 
 ```sh
-spall whoami                                   # your root and grants: what you may read/create/update/delete
+spall whoami                                   # what you may read/create/update/delete, one line per folder; folders not listed don't exist for you
 spall search "query words" [--folder F] [--any] [--limit N]
 spall search --related "Notes/Some note"       # notes similar to one note
 spall ls [folder] [--all] [--sort -modified] [--frontmatter]
-spall ls "1. Projects" --where Status=Done --missing Completed   # filter notes by frontmatter (also !=, >=, <)
+spall ls "1. Projects" --where Status=Done --missing Completed   # filter notes by frontmatter (also !=, >=, <); --missing also matches empty values (Completed:, "", [])
 spall tree [folder] [--depth N]                # folders only, with note counts: how the vault is organised
 spall read "Notes/Some note"                   # raw markdown, pipeable
 spall read "Notes/Some note" --outline         # headings + rev, no body: cheap

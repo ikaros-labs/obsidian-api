@@ -57,7 +57,20 @@ A self-hosted REST server over a folder of markdown files (an Obsidian vault or 
 ## Endpoints
 
 ### `GET /v1/me`
-Returns the account name, its root, its expanded access grants, and the token's name and expiry. This lets clients and agents find out what they're allowed to do.
+Returns what the caller can actually do: the account name, its root, its effective grants, the rate limit, the token's name and expiry, and the MCP tools it sees.
+
+```json
+{
+  "account": "reader", "description": null, "root": "",
+  "access": [{ "path": ".", "permissions": ["read"] }],
+  "rate_limit": "120/min",
+  "token": { "name": "laptop", "expires": null },
+  "mcp": { "enabled": true, "tools": ["spall_whoami", "spall_search", "spall_list", "spall_read", "spall_query_base"], "fenced": true }
+}
+```
+
+- `access` lists only grants with at least one permission. A hidden folder (a grant with no permissions) is left out, so it looks the same as a folder that doesn't exist (see 404-not-403 above).
+- `mcp.tools` is the tool list `/mcp` gives this account: its grants narrowed by the account's `mcp` config. With MCP off on the server, `enabled` is `false` and `tools` is `[]`. `mcp.fenced` says whether MCP results fence note text for this account (its effective `fence_untrusted`). The raw `mcp` config (`read_only`, `tools: null`) is not reported.
 
 ### Notes
 
@@ -174,7 +187,7 @@ Query parameters:
 - `sample=N`: returns N random entries from the filtered set instead of a page, for the reading-list bot. Add `seed=` to get the same picks again.
 - `include=body,frontmatter`: inlines note bodies and/or frontmatter (`body` only with `sample` or a `limit` of 20 or less)
 - `where=Key=Value` (repeatable, ANDed): notes whose frontmatter matches. Operators `=`, `!=`, and `>`, `>=`, `<`, `<=` with a number or a `YYYY-MM-DD` date. `=` matches any item of a list and ignores the value's case; `Key=` matches empty or missing values; `!=` also matches notes without the key.
-- `missing=Key` (repeatable): notes without that property.
+- `missing=Key` (repeatable): notes where that property is absent or empty: `Key:` (null), `""` or blank text, or `[]`. Obsidian shows all of these as empty (Properties panel, Bases `isEmpty()`), and templates often write an empty key (`Completed:`) on every unfinished note. A key that is present but empty still counts as a known property for the 400 below.
 - With `where` or `missing`, only notes are listed. Property names are case-sensitive, as in Obsidian. A name that no listed note has is a 400 naming it (`details.unknown_properties`, with `did_you_mean` for the same name in another case), and so is a condition that doesn't parse.
 
 ```json
@@ -672,11 +685,14 @@ A tool is shown when **one** grant includes every permission it needs. Then each
 - the account's `mcp: {read_only, tools}` in the config;
 - `?read_only=1&tools=a,b` on `/mcp`, or `spall mcp --read-only --tools a,b`.
 
-`read_only` drops every tool without `readOnlyHint`. The tool list is computed per request, so config reloads apply immediately. `/v1/me` reports the account's `mcp` settings, so `spall mcp` (stdio) applies the same filtering.
+`read_only` drops every tool without `readOnlyHint`. The tool list is computed per request, so config reloads apply immediately. `/v1/me` reports the resulting tool list (`mcp.tools`), so `spall mcp` (stdio) starts from the same list and its flags narrow it further; it fences note text when `mcp.fenced` is true.
 
 ### Results and errors
-- `structuredContent` and the text content come from one object.
-- Note bodies (markdown and section views) are wrapped in `<untrusted-content source="spall" path="…" rev="…">`. A closing marker inside the note is escaped. The server `instructions` tell the model not to follow instructions inside the markers. This is `mcp.fence_untrusted`, on by default and overridable per account.
+- `structuredContent` and the text content come from one object. `structuredContent` always carries the raw values; the text content is what fencing changes.
+- Note-derived text is wrapped in `<untrusted-content source="spall" path="…">` markers. A closing marker inside the note is escaped (`<\/untrusted-content`, which is still the same JSON string). The server `instructions` tell the model not to follow instructions inside the markers. This is `mcp.fence_untrusted`, on by default and overridable per account; off, the text is the plain JSON of the result.
+  - `spall_read` markdown and section views: the body, with `rev` in the attrs.
+  - `spall_search` (`snippet`, `heading`), `spall_list` with `frontmatter`, `spall_query_base` (row `values`, `group`, `groups`), `spall_read` views frontmatter (`frontmatter`, `tags`), outline (`headings`) and backlinks (`links`): the text is one JSON line for the result's plain fields, then per item one JSON line of its plain fields (path, name, score, rev, dates) followed by one fence holding the item's note fields as JSON. One fence per note keeps the note's path next to its text without repeating markers per field. A result with no note text (a list without frontmatter) stays plain JSON.
+  - Paths, counts, revs and other metadata are never fenced. The CLI doesn't fence.
 - REST errors become `isError: true` results with the REST `code`, a hint, and `structuredContent.error`:
 
 | Code | Tool error |

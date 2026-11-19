@@ -14,7 +14,8 @@ export const CLIENT_USAGE = `Client commands (need SPALL_TOKEN in the environmen
   search <query> [--folder F] [--any] [--limit N] [--cursor C]
   search --related <path>               Notes similar to a note
   ls [folder] [--all] [--sort -modified] [--frontmatter] [--limit N] [--cursor C]
-      --where "Status=Done" (also !=, >=, >, <=, < with numbers or dates)  --missing Key
+      --where "Status=Done" (also !=, >=, >, <=, < with numbers or dates)
+      --missing Key (absent or empty: "Key:", "", [])
   tree [folder] [--depth N] [--limit N]  Folders only, indented, with note counts
   tags [folder]
   read <path>                           Print the note (raw markdown), or a .base file's YAML
@@ -283,12 +284,17 @@ const COMMANDS: Record<string, Command> = {
   async whoami(ctx) {
     const d = await tool(ctx, 'spall_whoami', {});
     const grants = d.access as { path: string; permissions: string[] }[];
+    const mcp = d.mcp as { enabled: boolean; tools: string[] };
+    const width = Math.max(0, ...grants.map((g) => g.path.length));
     print(ctx, d, () =>
       lines([
         `account: ${d.account}`,
         `root: ${d.root === '' ? '(vault root)' : d.root}`,
-        ...grants.map((g) => `  ${g.path}: ${g.permissions.join(', ') || 'none'}`),
         `rate limit: ${d.rate_limit}`,
+        '',
+        ...grants.map((g) => `${g.path.padEnd(width)}  ${g.permissions.join(', ')}`),
+        '',
+        `MCP tools: ${mcp.enabled ? mcp.tools.join(', ') || 'none' : 'none (MCP is disabled on this server)'}`,
       ]),
     );
     return 0;
@@ -460,13 +466,14 @@ const COMMANDS: Record<string, Command> = {
 
   async mcp(ctx, v) {
     const me = await tool(ctx, 'spall_whoami', {});
-    const mcp = (me.mcp ?? {}) as { enabled?: boolean; read_only?: boolean; tools?: string[] | null; fence_untrusted?: boolean };
-    if (mcp.enabled === false) throw new ToolError('forbidden', 'MCP is disabled on this server (mcp.enabled: false)');
-    const tools = visibleTools(me.access as { permissions: string[] }[], mcp, {
+    const mcp = me.mcp as { enabled: boolean; tools: string[]; fenced: boolean };
+    if (!mcp.enabled) throw new ToolError('forbidden', 'MCP is disabled on this server (mcp.enabled: false)');
+    // mcp.tools already applies the account's own narrowing; the flags narrow further.
+    const tools = visibleTools(me.access as { permissions: string[] }[], { tools: mcp.tools }, {
       read_only: v['read-only'] === true,
       tools: typeof v.tools === 'string' ? v.tools.split(',').map((t) => t.trim()) : null,
     });
-    serveStdio(() => buildMcpServer(tools, ctx.caller, { fence: mcp.fence_untrusted ?? true }), {
+    serveStdio(() => buildMcpServer(tools, ctx.caller, { fence: mcp.fenced }), {
       onerror: (e) => ctx.io.err(`spall mcp: ${e.message}\n`),
     });
     return null;

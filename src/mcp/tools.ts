@@ -7,7 +7,7 @@ import { applyPatch, PatchOpSchema, readSection } from '../patch.js';
 import { revOf } from '../vault-index.js';
 import { encPath, qs, type Caller, type CallRequest, type CallResult } from './caller.js';
 import { errorFromResponse, ToolError } from './errors.js';
-import { errorResult, fence, toResult, treeText, truncateLines, type TreeData, type ToolOutput } from './format.js';
+import { errorResult, fence, fencedText, toResult, treeText, truncateLines, type TreeData, type ToolOutput } from './format.js';
 import { TOOL_NAMES, type ToolName } from './names.js';
 
 export { TOOL_NAMES, type ToolName } from './names.js';
@@ -38,6 +38,10 @@ interface ToolDef<S extends z.ZodObject = z.ZodObject> {
 
 const tool = <S extends z.ZodObject>(def: ToolDef<S>) => def as unknown as ToolDef;
 
+/** `data` as the tool's output, its note text (`noteKeys`) fenced when the account fences. */
+const withNotes = (ctx: ToolCtx, data: Record<string, unknown>, noteKeys: Parameters<typeof fencedText>[1]): ToolOutput =>
+  ctx.fence ? { data, text: fencedText(data, noteKeys) } : { data };
+
 /** Calls the API and parses JSON; any 4xx/5xx becomes a ToolError. */
 async function api(ctx: ToolCtx, req: Omit<CallRequest, 'tool'>): Promise<{ res: CallResult; json: Record<string, unknown> }> {
   const res = await ctx.call(req);
@@ -67,7 +71,8 @@ const cursor = z.string().optional().describe('next_cursor from the previous pag
 const whoami = tool({
   name: 'spall_whoami',
   title: 'Who am I',
-  description: 'Your account: root folder, grants per folder (read/create/update/delete) and rate limit. Call it when unsure what you can access.',
+  description:
+    'Your account: root folder, what you can do per folder (read/create/update/delete; folders not listed don\'t exist for you), rate limit, and the MCP tools you have. Call it when unsure what you can access.',
   input: z.object({}),
   annotations: RO,
   needs: [],
@@ -101,7 +106,7 @@ const search = tool({
         : `/v1/related${qs({ path: a.related_to, folder: a.folder, limit: a.limit, cursor: a.cursor, fields })}`;
     const { json } = await api(ctx, { method: 'GET', url });
     const data = paged(json, { scope: json.scope, total: json.total, results: json.results, ...(json.hint ? { hint: json.hint } : {}) });
-    if (json.total !== 0) return { data };
+    if (json.total !== 0) return withNotes(ctx, data, { item: ['snippet', 'heading'] });
     const sc = json.scope as { folder: string; notes: number };
     const where = `${sc.folder === '' ? 'all folders you can read' : `"${sc.folder}"`} (${sc.notes} notes)`;
     const what = a.query !== undefined ? `"${a.query}"` : `notes related to "${a.related_to}"`;
@@ -124,7 +129,7 @@ const list = tool({
     depth: z.enum(['1', 'all']).default('1').describe('"all" lists the whole subtree'),
     max_depth: z.number().int().min(1).max(20).default(3).describe('view=tree: folder levels to show'),
     where: z.array(z.string()).optional().describe('Frontmatter conditions, ANDed: "Status=Done", "Score>=4", "Due<2026-12-01"; = matches list items'),
-    missing: z.array(z.string()).optional().describe('Notes without these properties'),
+    missing: z.array(z.string()).optional().describe('Notes where these properties are absent or empty (Key:, "", [])'),
     sort: z.enum(['name', '-modified', 'modified', '-created', 'created', '-name']).default('name'),
     limit: z.number().int().min(1).max(500).default(200).describe('Entries per page (view=tree: folders shown)'),
     cursor,
@@ -149,7 +154,7 @@ const list = tool({
     for (const w of a.where ?? []) params.append('where', w);
     for (const m of a.missing ?? []) params.append('missing', m);
     const { json } = await api(ctx, { method: 'GET', url: `/v1/folders/${encPath(a.folder)}?${params}` });
-    return { data: paged(json, { path: json.path, total: json.total, results: json.results }) };
+    return withNotes(ctx, paged(json, { path: json.path, total: json.total, results: json.results }), { item: ['frontmatter'] });
   },
 });
 
@@ -179,15 +184,15 @@ const read = tool({
     if (a.view === 'backlinks') {
       const fields = 'path,rev,backlinks,links';
       const { json } = await api(ctx, { method: 'GET', url: `${url}?include=backlinks&fields=${fields}`, headers: { accept: 'application/json' } });
-      return { data: json };
+      return withNotes(ctx, json, { top: ['links'] });
     }
     if (a.view === 'outline') {
       const { json } = await api(ctx, { method: 'GET', url, headers: { accept: 'application/vnd.vault.outline+json' } });
-      return { data: json };
+      return withNotes(ctx, json, { top: ['headings'] });
     }
     if (a.view === 'frontmatter') {
       const { json } = await api(ctx, { method: 'GET', url: `${url}?fields=path,rev,frontmatter,tags`, headers: { accept: 'application/json' } });
-      return { data: json };
+      return withNotes(ctx, json, { top: ['frontmatter', 'tags'] });
     }
     if (a.view === 'section' && !a.heading) throw new ToolError('invalid_request', 'view=section needs heading');
     const { res } = await api(ctx, { method: 'GET', url, headers: { accept: 'text/markdown' } });
@@ -240,7 +245,7 @@ const queryBase = tool({
       a.base !== undefined
         ? await api(ctx, { method: 'POST', url: `/v1/bases/${encPath(a.base)}/query`, body: { view: a.view, ...common } })
         : await api(ctx, { method: 'POST', url: '/v1/query', body: { from: a.from, formulas: a.formulas, ...common } });
-    return { data: json };
+    return withNotes(ctx, json, { top: ['groups'], item: ['values', 'group'] });
   },
 });
 

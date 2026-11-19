@@ -34,7 +34,10 @@ describe('spall client commands', () => {
   it('whoami, human and --json', async () => {
     const h = await spall('agent', ['whoami']);
     expect(h).toMatchObject({ code: 0, err: '' });
-    expect(h.out).toContain('account: agent\nroot: (vault root)\n  Research: read, create, update\n');
+    expect(h.out).toContain('account: agent\nroot: (vault root)\n');
+    expect(h.out).toMatch(/^Research +read, create, update$/m);
+    expect(h.out).not.toContain('Notes/Private');
+    expect(h.out).toContain('MCP tools: spall_whoami, spall_search,');
     const j = await spall('agent', ['whoami', '--json']);
     expect(JSON.parse(j.out)).toMatchObject({ account: 'agent', mcp: { enabled: true } });
   });

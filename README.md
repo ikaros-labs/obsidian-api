@@ -158,7 +158,7 @@ Agents can use Spall without any glue code: through the **MCP endpoint** `POST /
 
 | Tool | What it does | Needs |
 |---|---|---|
-| `spall_whoami` | Root, grants and rate limit | – |
+| `spall_whoami` | Root, effective grants (hidden folders left out), rate limit and the MCP tools the account sees | – |
 | `spall_search` | BM25 search over titles, folder names, tags, frontmatter values and text, or notes related to a note; paths and snippets with their heading, no bodies | `read` |
 | `spall_list` | Folder entries (filtered by frontmatter with `where`/`missing`), a folder tree with note counts (`view=tree`), or tags with counts | `read` |
 | `spall_read` | A note as markdown, outline (headings + `rev`, no body), frontmatter, one section, or its backlinks; a `.base` file's YAML or its views; long notes are cut at `max_chars` | `read` |
@@ -168,7 +168,7 @@ Agents can use Spall without any glue code: through the **MCP endpoint** `POST /
 | `spall_move` | Move or rename; a destination ending in `/` or an existing folder moves into it | `update` + `delete` |
 | `spall_trash` | Move to the trash (never permanent); the only tool marked destructive | `delete` |
 
-Note bodies come back wrapped in `<untrusted-content …>` markers, and the server instructions tell the model not to follow instructions inside them (`mcp.fence_untrusted`, on by default). Vaults hold imported articles and tweets, so this matters.
+Note text (bodies, search snippets, frontmatter in listings, Bases row values) comes back wrapped in `<untrusted-content …>` markers, one fence per note with its path; paths and counts stay outside, and the server instructions tell the model not to follow instructions inside them (`mcp.fence_untrusted`, on by default). Vaults hold imported articles and tweets, so this matters.
 
 **Narrowing.** Tools can be hidden, never added: per account in the config (`mcp: {read_only: true, tools: [...]}`), per connection with `/mcp?read_only=1&tools=spall_search,spall_read`, or with `spall mcp --read-only --tools …`. Hiding a tool is a convenience; the REST checks are what enforce access.
 
@@ -236,9 +236,9 @@ Any other stdio client: run `npx -y @ikaros-labs/spall mcp` with `SPALL_URL` and
 `npm i -g @ikaros-labs/spall` (or `npx -y @ikaros-labs/spall …`; the command is `spall` either way), then set `SPALL_URL` and `SPALL_TOKEN` in the environment (`--url` can replace `SPALL_URL`; the token is never taken from the command line, so it stays out of process listings and shell history). For shell agents (Claude Code, Codex, Hermes), [`skills/spall/SKILL.md`](skills/spall/SKILL.md) is a ready-made skill that teaches the commands below.
 
 ```
-spall whoami                                   # root, grants, rate limit
+spall whoami                                   # root, grants (one line per folder), rate limit, MCP tools
 spall search <query> [--folder F] [--any] [--limit N] | spall search --related <path>
-spall ls [folder] [--all] [--sort -modified] [--frontmatter] [--where "Status=Done"] [--missing Key]
+spall ls [folder] [--all] [--sort -modified] [--frontmatter] [--where "Status=Done"] [--missing Key]   # --missing: absent or empty (Key:, "", [])
 spall tree [folder] [--depth N] [--limit N]    # folders only, indented, with note counts
 spall tags [folder]
 spall read <path>                              # raw markdown, pipeable
@@ -288,7 +288,7 @@ defaults:
 mcp:
   enabled: true            # default; false = /mcp answers 404
   allowed_origins: []      # browser Origins allowed to call /mcp (none by default)
-  fence_untrusted: true    # default: wrap note bodies in <untrusted-content> for MCP clients
+  fence_untrusted: true    # default: wrap note text in <untrusted-content> for MCP clients
 accounts:
   <name>:
     description: …
@@ -330,7 +330,7 @@ All endpoints are under `/v1` (plus `/mcp`, see [Agents](#agents-mcp--cli)) and 
 
 | Endpoint | What |
 |---|---|
-| `GET /v1/me` | The calling account, its root and grants |
+| `GET /v1/me` | The calling account: root, effective grants (hidden folders left out), token, the MCP tools it sees and whether results are fenced |
 | `GET /v1/notes/{path}` | A note as JSON (frontmatter, body, links, tags), raw markdown (`Accept: text/markdown`) or an outline. `ETag`; `If-None-Match` → 304 |
 | `PUT /v1/notes/{path}` | Create or replace (markdown or `{frontmatter, body}`); `If-Match` → 412 on conflict |
 | `POST /v1/notes` | Create from `{folder, title, frontmatter?, body?}` |

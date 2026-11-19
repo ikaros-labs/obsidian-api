@@ -160,3 +160,27 @@ describe('GET /v1/tags', () => {
     ]);
   });
 });
+
+describe('missing=Key', () => {
+  it('matches absent, null, blank and empty-list values; a present-but-empty key is still a known property', async () => {
+    const notes: Record<string, string> = {
+      Absent: 'Status: Done\n',
+      Null: 'Status: Done\nCompleted:\n',
+      Blank: 'Status: Done\nCompleted: ""\n',
+      Spaces: 'Status: Done\nCompleted: "  "\n',
+      List: 'Status: Done\nCompleted: []\n',
+      Done: 'Status: Done\nCompleted: 2026-11-01\n',
+    };
+    for (const [name, fm] of Object.entries(notes)) {
+      const res = await env.req('admin', { method: 'PUT', url: `/v1/notes/Shelf/${name}.md`, headers: { 'content-type': 'text/markdown' }, payload: `---\n${fm}---\nbody\n` });
+      expect(res.statusCode).toBe(201);
+    }
+    const { status, body } = await get('admin', '/v1/folders/Shelf?where=Status=Done&missing=Completed');
+    expect(status).toBe(200);
+    expect(paths(body)).toEqual(['Shelf/Absent.md', 'Shelf/Blank.md', 'Shelf/List.md', 'Shelf/Null.md', 'Shelf/Spaces.md']);
+    // Only empty values: the unknown-property check still sees the key.
+    await env.req('admin', { method: 'DELETE', url: '/v1/notes/Shelf/Done.md' });
+    expect((await get('admin', '/v1/folders/Shelf?missing=Completed')).status).toBe(200);
+    expect((await get('admin', '/v1/folders/Shelf?missing=Nope')).status).toBe(400);
+  });
+});

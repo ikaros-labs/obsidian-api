@@ -2,7 +2,7 @@ import { invalidRequest } from '../errors.js';
 
 /**
  * Simple frontmatter filters for listings: `Key=Value`, `Key!=Value`, `Key>=3`, `Key<2026-01-01`,
- * and `missing` keys. Property names are case-sensitive, as in Obsidian.
+ * and `missing` (empty) properties. Property names are case-sensitive, as in Obsidian.
  */
 export interface Condition {
   source: string;
@@ -46,14 +46,23 @@ function compare(v: unknown, c: Condition): boolean {
   return c.op === '>' ? d > 0 : c.op === '>=' ? d >= 0 : c.op === '<' ? d < 0 : d <= 0;
 }
 
+/**
+ * A property with no value: absent, null (`Key:`), blank text or an empty list. Obsidian shows all
+ * of these as empty (Properties panel, Bases `isEmpty()`).
+ */
+export function isEmpty(fm: Record<string, unknown>, key: string): boolean {
+  if (!Object.hasOwn(fm, key)) return true;
+  const v = fm[key];
+  return v === null || v === undefined || (typeof v === 'string' && v.trim() === '') || (Array.isArray(v) && v.length === 0);
+}
+
 /** `=` matches a value, or any item of a list, ignoring case; `Key=` matches empty values. */
 export function matches(fm: Record<string, unknown>, c: Condition): boolean {
   const has = Object.hasOwn(fm, c.key);
   const v = fm[c.key];
   if (c.op === '=' || c.op === '!=') {
     const want = c.value.toLowerCase();
-    const empty = !has || v === null || v === '' || (Array.isArray(v) && v.length === 0);
-    const eq = want === '' ? empty : has && scalars(v).some((x) => text(x).toLowerCase() === want);
+    const eq = want === '' ? isEmpty(fm, c.key) : has && scalars(v).some((x) => text(x).toLowerCase() === want);
     return c.op === '=' ? eq : !eq;
   }
   return has && scalars(v).some((x) => compare(x, c));
