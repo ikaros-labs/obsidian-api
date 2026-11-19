@@ -231,7 +231,8 @@ describe('item 6: search', () => {
     await pm.close();
     expect(m.text).toMatch(/^No matches for "zebra" in all folders you can read \(\d+ notes\)\./);
     expect((await spall('pm', ['search', 'zebra', '--folder', '1. Projects'])).out).toBe(
-      'No matches for "zebra" in "1. Projects/" (6 notes searched).\n',
+      'No matches for "zebra" in "1. Projects/" (6 notes searched).\n' +
+        "Notes in this scope are in English (≈100%); search is word-based and doesn't translate, so try the terms in that language.\n",
     );
   });
 

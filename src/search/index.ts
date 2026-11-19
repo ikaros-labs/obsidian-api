@@ -2,7 +2,7 @@ import { splitFrontmatter } from '../markdown.js';
 import type { Entry, VaultIndex } from '../vault-index.js';
 import { entryName } from '../vault-index.js';
 import { containsPhrase, parseQuery, type Clause } from './query.js';
-import { tokenize, words } from './tokenize.js';
+import { languageOf, tokenize, words, type Language } from './tokenize.js';
 
 /** Term weight per field: a word in the title counts as much as three in the body. */
 const FIELD_WEIGHTS = { name: 3, folders: 1, tags: 2, frontmatter: 1, body: 1 } as const;
@@ -24,6 +24,8 @@ interface Doc {
   /** `tf` and `len` without folder names, which say nothing about how similar notes are ("related"). */
   content: Map<string, number>;
   contentLen: number;
+  /** Mostly English or Russian (title and body), for the zero-result hint. */
+  lang: Language | null;
 }
 
 /**
@@ -170,7 +172,8 @@ export class SearchIndex {
       }
     }
     const frontmatter = e.meta?.frontmatter ?? null;
-    this.docs.set(e.path, { path: e.path, rev: e.rev ?? '', tf, len, seq, body, frontmatter, content, contentLen });
+    const lang = languageOf(`${entryName(e)} ${body}`);
+    this.docs.set(e.path, { path: e.path, rev: e.rev ?? '', tf, len, seq, body, frontmatter, content, contentLen, lang });
     this.vocab = null;
     for (const t of tf.keys()) {
       let set = this.postings.get(t);
@@ -195,6 +198,20 @@ export class SearchIndex {
   async count(scope: Scope): Promise<number> {
     await this.sync();
     return this.statsFor(scope).pool.length;
+  }
+
+  /**
+   * The languages the scope's notes are written in, with their share of the notes that have one,
+   * most common first. Only counts: never which notes, so hidden notes can't leak through it.
+   */
+  async languages(scope: Scope): Promise<{ language: Language; share: number }[]> {
+    await this.sync();
+    const counts = new Map<Language, number>();
+    for (const { doc } of this.statsFor(scope).pool) if (doc.lang) counts.set(doc.lang, (counts.get(doc.lang) ?? 0) + 1);
+    const total = [...counts.values()].reduce((a, b) => a + b, 0);
+    return [...counts]
+      .map(([language, n]) => ({ language, share: n / total }))
+      .sort((a, b) => b.share - a.share);
   }
 
   /** Statistics for a scope, from the cache when the index hasn't changed since. */

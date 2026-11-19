@@ -5,6 +5,7 @@ import {
   compileFilter,
   createFileContext,
   createLinkResolutionMap,
+  frontmatterLink,
   normalizeFrontmatterProperties,
   stringifyValue,
   toPlain,
@@ -17,6 +18,7 @@ import {
   type RuntimeValue,
 } from 'obsidian-bases-expression';
 import type { ObsidianType } from '../config.js';
+import { propertyWikilink } from '../markdown.js';
 import type { Entry, VaultIndex } from '../vault-index.js';
 
 export interface SortSpec {
@@ -290,7 +292,7 @@ export class BasesEngine {
     const cached = this.state.fileCache.get(cacheKey);
     if (cached) return cached;
     const fm = e.meta?.frontmatter ?? {};
-    const note = normalizeFrontmatterProperties(fm, { propertyTypes: this.rowTypes(fm) });
+    const note = this.withLinks(normalizeFrontmatterProperties(fm, { propertyTypes: this.rowTypes(fm) }), e.path);
     const links = (e.meta?.links ?? []).map((l) => ({
       path: l.target,
       resolvedPath: this.scope.index.resolveLink(l, e.path, this.scope.visible)?.path ?? null,
@@ -307,6 +309,24 @@ export class BasesEngine {
     });
     this.state.fileCache.set(cacheKey, input);
     return input;
+  }
+
+  /**
+   * Property values that are whole wikilinks (`"[[X]]"`, also in lists) become links, as in
+   * Obsidian, so `note.base == link("X")` and `.contains(link("X"))` compare them as links.
+   * Resolved like body links, among visible files only.
+   */
+  private withLinks(note: Record<string, unknown>, from: string): Record<string, unknown> {
+    const toLink = (v: unknown) => {
+      const l = propertyWikilink(v);
+      if (!l) return v;
+      // Unresolved → let the library resolve it the same way it resolves `link()`.
+      const resolved = this.scope.index.resolveLink({ target: l.target, kind: 'wiki' }, from, this.scope.visible)?.path;
+      return frontmatterLink(l.target, l.display, resolved);
+    };
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(note)) out[k] = Array.isArray(v) ? v.map(toLink) : toLink(v);
+    return out;
   }
 
   private backlinksOf(p: string): { path: string }[] {

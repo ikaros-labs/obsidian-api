@@ -70,6 +70,21 @@ async function results(
   };
 }
 
+const LANGUAGE_NAMES = { en: 'English', ru: 'Russian' } as const;
+
+/**
+ * For an empty search: which languages the notes in scope are in, since search matches words and
+ * doesn't translate. Agents tend to search only in English.
+ */
+async function noMatchHint(ctx: Ctx, scope: Scope, notes: number): Promise<string> {
+  const head = `No matches in ${notes} ${notes === 1 ? 'note' : 'notes'}.`;
+  const langs = await ctx.s.search.languages(scope);
+  if (langs.length === 0) return head;
+  const list = langs.map((l) => `${LANGUAGE_NAMES[l.language]} (≈${Math.round(l.share * 100)}%)`).join(' and ');
+  const tail = langs.length > 1 ? 'so try the terms in those languages too' : 'so try the terms in that language';
+  return `${head} Notes in this scope are in ${list}; search is word-based and doesn't translate, ${tail}.`;
+}
+
 export function searchRoutes(app: FastifyInstance, s: Services) {
   app.get('/v1/search', { schema: doc({ summary: 'Full-text search (BM25, English and Russian) over readable notes', tag: 'Search', query: SearchQuery }) }, async (req) => {
     const ctx = new Ctx(req, s);
@@ -83,7 +98,8 @@ export function searchRoutes(app: FastifyInstance, s: Services) {
       throw e;
     }
     const { cursor: _c, fields: _f, limit: _l, ...rest } = q;
-    return { query: q.q, ...(await results(ctx, scope, hits, q, 'search', rest)) };
+    const body = await results(ctx, scope, hits, q, 'search', rest);
+    return { query: q.q, ...body, ...(hits.length === 0 ? { hint: await noMatchHint(ctx, scope, body.scope.notes) } : {}) };
   });
 
   app.get('/v1/related', { schema: doc({ summary: 'Readable notes most similar to a note', tag: 'Search', query: RelatedQuery }) }, async (req) => {

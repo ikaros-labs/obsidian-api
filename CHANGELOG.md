@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.2.0 — unreleased
+## 1.2.0 — 2026-11-19
 
 Correctness fixes and fewer calls for agents, from the 1.1.0 agent evals.
 
@@ -13,6 +13,7 @@ Correctness fixes and fewer calls for agents, from the 1.1.0 agent evals.
   - A visible non-note file asked for through a note route or tool returns 400 `not_a_note`, naming the endpoint/tool to use, instead of `not_found`. Hidden files still return 404.
 - **Backlinks over MCP and the CLI:** `spall_read view=backlinks` and `spall read <path> --backlinks` list the notes linking to a note (only notes the account can read), like `?include=backlinks` in REST.
 - **Fix:** a wikilink `[[X]]` no longer resolves to a folder named `X`; it finds the note (e.g. the folder note `X/X.md`). This made backlinks and resolved `links` miss folder notes.
+- **Fix: bases compare wikilink properties as links.** A frontmatter value that is a whole wikilink (`base: "[[Info Dump.base]]"`, also `[[X|alias]]`, `[[folder/X]]` and list items) is a link, as in Obsidian, so `note["base"] == link("Info Dump.base")` and `.contains(link(…))` match it; before, such a base returned no rows. These links also count as the note's outgoing links: `file.hasLink`, `file.links` and backlinks see them.
 - **CLI paths are copy-pasteable.** `search`, `ls`, `tree` and `read --backlinks` print paths in double quotes when they have spaces or a leading number (`"1. Projects/Tram Board.md"`), so a numbered folder no longer reads as a rank. Search hits show `score N` instead of a bare number in parentheses.
 - **`not_found` suggests paths.** A 404 for a path gets `details.did_you_mean` (up to three): the same path without `1. `-style prefixes, case, `.md` or `.base`, the same name in another folder, or a near-miss spelling. Suggestions come only from paths the account can see, so a hidden path and a missing one still get the same answer. MCP and CLI errors show them in the message. The CLI prints a `not_a_note` error with the path quoted and without the REST endpoints.
 - **Frontmatter filters on listings:** `where` (`Status=Done`, `Status!=Done`, `Score>=4`, `Due<2026-12-01`; `=` matches list items and ignores the value's case) and `missing` (notes without a property) on `GET /v1/folders`, `spall_list` and `spall ls --where … --missing …`. A property no listed note has, or a condition that doesn't parse, is a 400 that names it, and suggests the property with the same name in another case (names stay case-sensitive, as in Obsidian).
@@ -21,9 +22,11 @@ Correctness fixes and fewer calls for agents, from the 1.1.0 agent evals.
   - folder names match too (`template` finds notes under `templates/`), as titles, tags and frontmatter values already did; `related` ignores folder names;
   - snippets come from the line with the most matched terms, centred on the match, with a new `heading` field (`"Notes > Highlights"`); when only the frontmatter matched, the snippet is that `Key: value`;
   - responses include `scope: {folder, notes}`, and an empty result says so: MCP `No matches for "x" in … (N notes)`, CLI `No matches for "x" in … (N notes searched).`
+  - an empty result also says which languages the notes in scope are in (REST `hint`, MCP text, CLI): `Notes in this scope are in English (≈80%) and Russian (≈20%); search is word-based and doesn't translate, so try the terms in those languages too.` Only counts over notes the account can read, never names.
 - **Paging:**
   - a cursor no longer depends on `limit`, so the next page can be bigger;
   - a cursor used with other parameters names them: `Invalid cursor: depth, sort changed …` (`details.changed`);
+  - a malformed cursor is always a 400, never a 500;
   - `spall_list` pages hold 200 entries by default (max 500), `spall_search` 20 (max 100); MCP results have `next_cursor` only when there is a next page;
   - listing totals include `entries` (everything that matched, folders too), and the CLI prints `(63 entries: 50 notes, 1 file, 12 folders)` or `(50 shown of 63 entries…; more: --cursor …)`.
 - **Folder tree:** `GET /v1/tree/{path}?depth=3&limit=200`, `spall_list view=tree` (`max_depth`) and `spall tree [folder] [--depth N] [--limit N]`. Folders only, indented, each with its count of readable notes below it; folders past the depth are summed into their parent (`2 subfolders below`), and a cap adds a `[truncated: …]` line. Scoped like listings: traverse-only parents are marked, hidden folders and notes aren't shown or counted.

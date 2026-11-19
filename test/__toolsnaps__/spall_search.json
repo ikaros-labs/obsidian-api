@@ -1,7 +1,7 @@
 {
   "name": "spall_search",
   "title": "Search notes",
-  "description": "Full-text search (BM25) over the notes you can read, or notes related to one note. Give exactly one of query or related_to. Whole words (stemmed) match in titles, folder names, tags, frontmatter values and text. Returns paths, snippets with their heading, not bodies; read a hit with spall_read.",
+  "description": "Full-text search (BM25) over the notes you can read, or notes related to one note. Give exactly one of query or related_to. Whole words (stemmed) match in titles, folder names, tags, frontmatter values and text. Returns paths, snippets with their heading, not bodies; read a hit with spall_read. Search doesn't translate: when nothing matches, the reply says which languages the notes are in, so search again in those.",
   "inputSchema": {
     "type": "object",
     "properties": {
