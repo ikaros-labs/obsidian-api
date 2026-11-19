@@ -305,6 +305,24 @@ describe('DELETE and move', () => {
     expect(renamed.json().path).toBe('Research/inbox/Final 1.md');
   });
 
+  it('moves into a folder given with a trailing slash or as an existing folder, keeping the name', async () => {
+    const mv = (from: string, destination: string) =>
+      env.req('agent', { method: 'POST', url: `${note(from)}/move`, payload: { destination } });
+    await env.req('agent', { method: 'PUT', url: note('Research/inbox/Into'), headers: { 'content-type': 'text/markdown' }, payload: 'x' });
+    const slash = await mv('Research/inbox/Into', 'Research/inbox/Sub/');
+    expect(slash.json().path).toBe('Research/inbox/Sub/Into.md');
+    expect(existsSync(path.join(env.vault, 'Research/inbox/Sub.md'))).toBe(false);
+    const existing = await mv('Research/inbox/Sub/Into', 'Research/inbox');
+    expect(existing.json().path).toBe('Research/inbox/Into.md');
+    // a name that is not an existing folder is still a note path
+    expect((await mv('Research/inbox/Into', 'Research/inbox/Plain')).json().path).toBe('Research/inbox/Plain.md');
+    // a hidden folder is never treated as a folder: no difference from a missing one
+    const hidden = await mv('Research/inbox/Plain', 'Notes/Private');
+    const missing = await mv('Research/inbox/Plain', 'Notes/Nope');
+    expect([hidden.statusCode, hidden.json().error.code]).toEqual([missing.statusCode, missing.json().error.code]);
+    expect(hidden.json().error.message).not.toContain('Private/');
+  });
+
   it('needs update+delete on the source and create on the destination', async () => {
     const noDelete = await env.req('agent', { method: 'POST', url: `${note('Research/Plan')}/move`, payload: { destination: 'Research/inbox/Plan' } });
     expect(noDelete.statusCode).toBe(403);

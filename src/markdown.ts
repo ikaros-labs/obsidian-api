@@ -8,6 +8,8 @@ export interface SplitNote {
   body: string;
   /** Number of lines before the body starts. */
   bodyLineOffset: number;
+  /** The fence lines as written (with their line endings), so edits can keep them. */
+  fences?: { open: string; close: string };
 }
 
 export function splitFrontmatter(text: string): SplitNote {
@@ -26,6 +28,7 @@ export function splitFrontmatter(text: string): SplitNote {
         frontmatterRaw: text.slice(firstNl + 1, pos),
         body: nl === -1 ? '' : text.slice(nl + 1),
         bodyLineOffset: lineNo,
+        fences: { open: text.slice(0, firstNl + 1), close: nl === -1 ? text.slice(pos) : text.slice(pos, nl + 1) },
       };
     }
     if (nl === -1) break;
@@ -34,10 +37,14 @@ export function splitFrontmatter(text: string): SplitNote {
   return none;
 }
 
-export function joinFrontmatter(frontmatterRaw: string | null, body: string): string {
+/** `fences` (from splitFrontmatter) keeps the original fence lines, e.g. CRLF or a `...` closing fence. */
+export function joinFrontmatter(frontmatterRaw: string | null, body: string, fences?: { open: string; close: string }): string {
   if (frontmatterRaw === null) return body;
-  const fm = frontmatterRaw === '' || frontmatterRaw.endsWith('\n') ? frontmatterRaw : `${frontmatterRaw}\n`;
-  return `---\n${fm}---\n${body}`;
+  const eol = fences?.open.endsWith('\r\n') ? '\r\n' : '\n';
+  const fm = frontmatterRaw === '' || frontmatterRaw.endsWith('\n') ? frontmatterRaw : `${frontmatterRaw}${eol}`;
+  let close = fences?.close ?? '---\n';
+  if (body !== '' && !close.endsWith('\n')) close += eol;
+  return `${fences?.open ?? '---\n'}${fm}${close}${body}`;
 }
 
 /** Parses frontmatter YAML. Returns null if it is not valid YAML or not a mapping. */

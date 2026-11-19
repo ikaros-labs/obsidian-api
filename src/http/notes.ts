@@ -7,7 +7,7 @@ import { PatchBodySchema, applyPatch } from '../patch.js';
 import { join, parsePlainPath, sanitizeTitle, withMdExtension } from '../paths.js';
 import { revOf } from '../vault-index.js';
 import { Ctx, etag, header, negotiate, parse, parseEtagList, project, type Services } from './context.js';
-import { checkIfMatch, DeleteQuery, deleteFile, MoveBody, moveFile, noteJson, putFile, stripMove } from './fileops.js';
+import { checkIfMatch, checkNotANote, DeleteQuery, deleteFile, MoveBody, moveFile, noteJson, putFile, stripMove } from './fileops.js';
 import { doc, jsonSchema } from './openapi.js';
 
 const PREFIX = '/v1/notes/';
@@ -42,9 +42,10 @@ function renderNote(frontmatter: Record<string, unknown> | undefined, body: stri
 const includes = (q: { include?: string }, what: string) => (q.include ?? '').split(',').map((s) => s.trim()).includes(what);
 
 export function noteRoutes(app: FastifyInstance, s: Services) {
-  const notePath = (ctx: Ctx) => {
-    const segs = withMdExtension(ctx.urlPath(PREFIX));
+  const notePath = async (ctx: Ctx, raw = ctx.urlPath(PREFIX)) => {
+    const segs = withMdExtension(raw);
     if (segs.length === ctx.account.root.length) throw new ApiError(400, 'invalid_path', 'A note path is required');
+    await checkNotANote(ctx, raw, segs);
     return segs;
   };
 
@@ -54,7 +55,7 @@ export function noteRoutes(app: FastifyInstance, s: Services) {
     tag: 'Notes', url: '/v1/notes/{path}', query: NoteQuery }) }, async (req, reply) => {
     const ctx = new Ctx(req, s);
     const q = parse(NoteQuery, req.query, 'query');
-    const real = await ctx.resolve(notePath(ctx), 'read');
+    const real = await ctx.resolve(await notePath(ctx), 'read');
     const buf = await s.vault.read(real);
     const rev = revOf(buf);
     const st = await s.vault.stat(real);
@@ -83,7 +84,7 @@ export function noteRoutes(app: FastifyInstance, s: Services) {
       const b = parse(JsonNoteBody, req.body);
       text = renderNote(b.frontmatter, b.body);
     } else throw invalidRequest('Send the note as text/markdown, or as JSON {frontmatter, body}');
-    return putFile(ctx, notePath(ctx), Buffer.from(text, 'utf8'), reply, { note: true });
+    return putFile(ctx, await notePath(ctx), Buffer.from(text, 'utf8'), reply, { note: true });
   });
 
   app.post('/v1/notes', { schema: doc({ summary: 'Create a note from a title (the file name is derived from it)', tag: 'Notes', body: CreateBody }) }, async (req, reply) => {
@@ -119,7 +120,7 @@ export function noteRoutes(app: FastifyInstance, s: Services) {
     const ctx = new Ctx(req, s);
     const q = parse(NoteQuery, req.query, 'query');
     const body = parse(PatchBodySchema, req.body);
-    const segs = notePath(ctx);
+    const segs = await notePath(ctx);
     const ifMatch = body.if_match ? [body.if_match] : parseEtagList(header(req, 'if-match'));
     return s.vault.locks.run([join(segs)], async () => {
       const real = await ctx.resolve(segs, 'read', 'update');
@@ -140,12 +141,12 @@ export function noteRoutes(app: FastifyInstance, s: Services) {
 
   app.delete('/v1/notes/*', { schema: doc({ summary: 'Move a note to the trash, or delete it with permanent=true', tag: 'Notes', url: '/v1/notes/{path}', query: DeleteQuery }) }, async (req, reply) => {
     const ctx = new Ctx(req, s);
-    return deleteFile(ctx, notePath(ctx), reply);
+    return deleteFile(ctx, await notePath(ctx), reply);
   });
 
   app.post('/v1/notes/*', { schema: doc({ summary: 'Move or rename a note', tag: 'Notes', url: '/v1/notes/{path}/move', body: MoveBody }) }, async (req) => {
     const ctx = new Ctx(req, s);
-    const segs = withMdExtension(stripMove(ctx.urlPath(PREFIX), ctx.account.root.length));
+    const segs = await notePath(ctx, stripMove(ctx.urlPath(PREFIX), ctx.account.root.length));
     return moveFile(ctx, segs, req.body, { note: true });
   });
 }

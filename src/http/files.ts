@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { checkBase } from '../bases/base-file.js';
 import { ApiError, invalidRequest } from '../errors.js';
 import { revOf } from '../vault-index.js';
 import { Ctx, etag, header, parseEtagList, type Services } from './context.js';
@@ -92,10 +93,12 @@ export async function fileRoutes(app: FastifyInstance, s: Services) {
     return reply.send(buf);
   });
 
-  app.put('/v1/files/*', { schema: doc({ summary: 'Upload or replace a file (raw bytes)', tag: 'Files', url: '/v1/files/{path}', body: { content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary' } } } } }) }, async (req, reply) => {
+  app.put('/v1/files/*', { schema: doc({ summary: 'Upload or replace a file (raw bytes)', description: 'A .base file must be valid YAML with a valid base structure and filter/formula expressions (422 invalid_base otherwise).', tag: 'Files', url: '/v1/files/{path}', body: { content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary' } } } } }) }, async (req, reply) => {
     const ctx = new Ctx(req, s);
     const data = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-    return putFile(ctx, filePath(ctx), data, reply, { note: false });
+    const segs = filePath(ctx);
+    if (/\.base$/i.test(segs.at(-1)!)) checkBase(data.toString('utf8'));
+    return putFile(ctx, segs, data, reply, { note: false });
   });
 
   app.delete('/v1/files/*', { schema: doc({ summary: 'Move a file to the trash, or delete it with permanent=true', tag: 'Files', url: '/v1/files/{path}', query: DeleteQuery }) }, async (req, reply) => {

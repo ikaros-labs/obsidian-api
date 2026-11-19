@@ -50,13 +50,17 @@ async function api(ctx: ToolCtx, req: Omit<CallRequest, 'tool'>): Promise<{ res:
 const revOfEtag = (res: CallResult) => (res.headers.etag ?? '').replace(/^W\//, '').replace(/^"(.*)"$/, '$1');
 const notePath = (p: string) => {
   const clean = p.replace(/^\/+|\/+$/g, '');
-  return /\.md$/i.test(clean) ? clean : `${clean}.md`;
+  return /\.(md|base)$/i.test(clean) ? clean : `${clean}.md`;
 };
+/** .base files are plain YAML files: read and written through /v1/files. */
+const isBase = (p: string) => /\.base\/*$/i.test(p);
+const fileUrl = (p: string) => `/v1/${isBase(p) ? 'files' : 'notes'}/${encPath(p)}`;
 const splitHeading = (h: string) => h.split(' > ').map((s) => s.trim());
 
 const RO: ToolAnnotations = { readOnlyHint: true, openWorldHint: false };
 
 const path = z.string().min(1).describe('Note path relative to your root; ".md" optional');
+const notePathOrBase = z.string().min(1).describe('Note path relative to your root (".md" optional), or a .base file');
 const folder = z.string().default('').describe('Folder relative to your root; "" is the root');
 const cursor = z.string().optional().describe('next_cursor from the previous page');
 
@@ -139,10 +143,10 @@ const read = tool({
   name: 'spall_read',
   title: 'Read a note',
   description:
-    'Reads a note and its rev. view=markdown (default) returns the text; view=outline returns headings, block ids and frontmatter keys without the body (a cheap way to get the rev); view=frontmatter returns properties and tags; view=section returns one heading\'s section. Long notes are cut at max_chars.',
+    'Reads a note and its rev. view=markdown (default) returns the text; view=outline returns headings, block ids and frontmatter keys without the body (a cheap way to get the rev); view=frontmatter returns properties and tags; view=section returns one heading\'s section; view=backlinks lists the notes linking to it, and its own links. A .base file: view=markdown returns its YAML (edit it with spall_edit), view=outline its views (filters, sort, columns, default_view). Long notes are cut at max_chars.',
   input: z.object({
-    path,
-    view: z.enum(['markdown', 'outline', 'frontmatter', 'section']).default('markdown'),
+    path: notePathOrBase,
+    view: z.enum(['markdown', 'outline', 'frontmatter', 'section', 'backlinks']).default('markdown'),
     heading: z.string().optional().describe('For view=section: heading path like "Notes > Highlights"'),
     index: z.number().int().min(0).optional().describe('For view=section: which match, when the heading is ambiguous'),
     max_chars: z.number().int().min(500).max(200_000).default(20_000),
@@ -150,7 +154,19 @@ const read = tool({
   annotations: RO,
   needs: ['read'],
   async run(ctx, a) {
-    const url = `/v1/notes/${encPath(a.path)}`;
+    const url = fileUrl(a.path);
+    if (isBase(a.path) && a.view !== 'markdown' && a.view !== 'outline') {
+      throw new ToolError('invalid_request', 'A .base file is read as YAML (the default view) or as its views (view=outline)');
+    }
+    if (isBase(a.path) && a.view === 'outline') {
+      const { json } = await api(ctx, { method: 'GET', url: `/v1/bases/${encPath(a.path)}` });
+      return { data: { path: json.path, rev: json.rev, default_view: json.default_view, views: json.views, diagnostics: json.diagnostics } };
+    }
+    if (a.view === 'backlinks') {
+      const fields = 'path,rev,backlinks,links';
+      const { json } = await api(ctx, { method: 'GET', url: `${url}?include=backlinks&fields=${fields}`, headers: { accept: 'application/json' } });
+      return { data: json };
+    }
     if (a.view === 'outline') {
       const { json } = await api(ctx, { method: 'GET', url, headers: { accept: 'application/vnd.vault.outline+json' } });
       return { data: json };
@@ -305,31 +321,47 @@ const edit = tool({
   name: 'spall_edit',
   title: 'Edit a note',
   description:
-    'Edits a note in place; all ops apply atomically or none do. Ops: append/prepend/replace (whole body, a heading\'s section or a block), replace_text (exact match), frontmatter.set/unset/merge (keeps value types), replace_all (whole file; must be the only op). Pass expected_rev (from spall_read) so you never overwrite a change you haven\'t seen.',
+    'Edits a note in place; all ops apply atomically or none do. Ops: append/prepend/replace (whole body, a heading\'s section or a block), replace_text (exact match), frontmatter.set/unset/merge (keeps value types; other lines stay byte-for-byte), replace_all (whole file; must be the only op). A .base file takes replace_text and replace_all, and must stay a valid base. Pass expected_rev (from spall_read) so you never overwrite a change you haven\'t seen.',
   input: z.object({
-    path,
+    path: notePathOrBase,
     expected_rev: z.string().optional().describe('rev from spall_read; the edit fails if the note changed'),
     ops: z.array(EditOp).min(1).max(100),
   }),
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   needs: ['update'],
   async run(ctx, a) {
-    const url = `/v1/notes/${encPath(a.path)}`;
+    const url = fileUrl(a.path);
+    const base = isBase(a.path);
     const replaceAll = a.ops.some((o) => o.op === 'replace_all');
     if (replaceAll && a.ops.length > 1) throw new ToolError('invalid_request', 'replace_all must be the only op');
+    const bad = base ? a.ops.findIndex((o) => o.op !== 'replace_text' && o.op !== 'replace_all') : -1;
+    if (bad >= 0) throw new ToolError('invalid_request', `ops[${bad}]: a .base file takes replace_text and replace_all only`);
     const ops = replaceAll ? [] : a.ops.map(restOp);
     const before = await api(ctx, { method: 'GET', url, headers: { accept: 'text/markdown' } });
     const previousRev = revOfEtag(before.res);
     try {
       let rev: string;
       let after: string | null = null;
-      if (replaceAll) {
+      if (base && !replaceAll) {
+        // A .base is written whole: apply the text ops here, then PUT only over the version read.
+        let next: string;
+        try {
+          next = applyPatch(before.res.body, ops.map((o) => PatchOpSchema.parse(o)));
+        } catch (e) {
+          if (e instanceof ApiError) throw new ToolError(e.code, e.message, e.details);
+          throw e;
+        }
+        const ifMatch = `"${a.expected_rev ?? previousRev}"`;
+        const { res } = await api(ctx, { method: 'PUT', url, headers: { 'if-match': ifMatch, 'content-type': 'text/yaml' }, body: next });
+        rev = revOfEtag(res);
+        after = next;
+      } else if (replaceAll) {
         const content = a.ops[0]!.content;
         if (content === undefined) throw new ToolError('invalid_request', 'ops[0]: replace_all needs content');
         // Without expected_rev, still only replace the version just read.
         const ifMatch = `"${a.expected_rev ?? previousRev}"`;
-        const { json } = await api(ctx, { method: 'PUT', url: `${url}?fields=path,rev`, headers: { 'if-match': ifMatch }, body: content });
-        rev = json.rev as string;
+        const { res } = await api(ctx, { method: 'PUT', url: `${url}?fields=path,rev`, headers: { 'if-match': ifMatch, ...(base ? { 'content-type': 'text/yaml' } : {}) }, body: content });
+        rev = revOfEtag(res);
         after = content;
       } else {
         const { json } = await api(ctx, { method: 'PATCH', url: `${url}?fields=path,rev`, body: { ...(a.expected_rev ? { if_match: a.expected_rev } : {}), ops } });
@@ -368,10 +400,10 @@ const edit = tool({
 const move = tool({
   name: 'spall_move',
   title: 'Move or rename a note',
-  description: 'Moves or renames a note. Needs update+delete on the source and create on the destination. Links in other notes are not rewritten.',
+  description: 'Moves or renames a note (or a .base file). Needs update+delete on the source and create on the destination. Links in other notes are not rewritten.',
   input: z.object({
-    path,
-    destination: z.string().min(1).describe('New note path relative to your root'),
+    path: notePathOrBase,
+    destination: z.string().min(1).describe('New note path, or a folder (ending in / or existing) to move into keeping the name'),
     on_conflict: z.enum(['fail', 'rename']).default('fail'),
   }),
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -379,7 +411,7 @@ const move = tool({
   async run(ctx, a) {
     const { json } = await api(ctx, {
       method: 'POST',
-      url: `/v1/notes/${encPath(a.path)}/move?fields=path,rev`,
+      url: `${fileUrl(a.path)}/move?fields=path,rev`,
       body: { destination: a.destination, on_conflict: a.on_conflict },
     });
     return { data: { from: notePath(a.path), path: json.path, rev: json.rev } };
@@ -396,7 +428,7 @@ const trash = tool({
   async run(ctx, a) {
     await api(ctx, {
       method: 'DELETE',
-      url: `/v1/notes/${encPath(a.path)}`,
+      url: fileUrl(a.path),
       headers: a.expected_rev ? { 'if-match': `"${a.expected_rev}"` } : {},
     });
     return { data: { trashed: notePath(a.path) } };

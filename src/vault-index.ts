@@ -214,7 +214,8 @@ export class VaultIndex {
         return [p, noExt].some((x) => x === target || x.endsWith(`/${target}`));
       });
     } else {
-      candidates = [...(this.byName.get(target) ?? [])].map((p) => this.entries.get(p)!).filter(Boolean);
+      // Folders share the name index but are never link targets (a folder note `X/X.md` is).
+      candidates = [...(this.byName.get(target) ?? [])].map((p) => this.entries.get(p)!).filter((e) => e && e.kind !== 'folder');
     }
     candidates = candidates.filter(visible);
     if (candidates.length === 0) return null;

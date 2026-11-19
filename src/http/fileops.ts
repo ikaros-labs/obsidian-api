@@ -55,6 +55,35 @@ export async function noteJson(ctx: Ctx, real: string[], text: string, opts: { b
   return out;
 }
 
+/** Whether `segs` is something the account can read: the path and its resolved target. */
+async function readableExisting(ctx: Ctx, segs: string[]): Promise<'file' | 'folder' | null> {
+  if (!ctx.perms(segs).has('read')) return null;
+  try {
+    const real = await ctx.s.vault.resolve(segs);
+    return ctx.perms(real).has('read') ? await ctx.s.vault.kindOf(real) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `X.base` (or `X.png`, …) asked for as a note: when the account can read such a file and can't read
+ * an `X.base.md` note, say it is not a note instead of not_found. The answer depends only on what the
+ * account can read: hidden files stay plain 404, and a hidden `X.base.md` changes nothing.
+ */
+export async function checkNotANote(ctx: Ctx, raw: string[], note: string[]): Promise<void> {
+  if (raw === note || !/\.[^.\s]+$/.test(raw.at(-1)!)) return;
+  if ((await readableExisting(ctx, raw)) !== 'file') return;
+  if ((await readableExisting(ctx, note)) !== null) return;
+  const p = ctx.toApi(raw);
+  const base = /\.base$/i.test(p);
+  throw new ApiError(400, 'not_a_note', `${p} is a ${base ? 'base' : 'file'}, not a note`, {
+    path: p,
+    kind: base ? 'base' : 'file',
+    use: base ? `/v1/files/${p} (raw YAML), /v1/bases/${p} (views)` : `/v1/files/${p}`,
+  });
+}
+
 /** Permissions on a path and, if it goes through a symlink, on its target too. */
 function effectivePerms(ctx: Ctx, segs: string[], real: string[]): Set<Perm> {
   const a = ctx.perms(segs);
@@ -148,7 +177,12 @@ export async function moveFile(ctx: Ctx, segs: string[], body: unknown, kind: Ki
   const b = parse(MoveBody, body);
   const { vault } = ctx.s;
   let dest = ctx.toVault(parsePlainPath(b.destination));
-  if (kind.note) dest = withMdExtension(dest);
+  // "Folder/" or an existing folder the account can see: move into it, keeping the file name.
+  const intoFolder =
+    /\/\s*$/.test(b.destination) ||
+    (dest.length > ctx.account.root.length && ctx.perms(dest).size > 0 && (await vault.kindOf(await vault.resolve(dest))) === 'folder');
+  if (intoFolder) dest = [...dest, segs.at(-1)!];
+  else if (kind.note) dest = withMdExtension(dest);
   if (dest.length === ctx.account.root.length) throw new ApiError(400, 'invalid_path', 'A destination file path is required');
 
   return vault.locks.run([join(segs), join(dest)], async () => {

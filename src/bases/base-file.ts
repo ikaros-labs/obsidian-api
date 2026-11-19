@@ -87,6 +87,12 @@ export function baseDiagnostics(base: BaseFile): Diagnostic[] {
   return out;
 }
 
+/** Throws invalid_base unless `text` is a .base file that parses, including every expression in it. */
+export function checkBase(text: string): void {
+  const diagnostics = baseDiagnostics(parseBase(text));
+  if (diagnostics.length > 0) throw invalidBase('The base has invalid expressions', { diagnostics });
+}
+
 /** Display name for a property id: `properties` may key it as `Status` or `note.Status`. */
 export function displayName(base: Pick<BaseFile, 'properties'>, id: string): string {
   const bare = id.startsWith('note.') ? id.slice(5) : id;

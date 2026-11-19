@@ -1,4 +1,4 @@
-import { Document, isMap, parseDocument } from 'yaml';
+import { Document, isCollection, isMap, isScalar, parseDocument, Scalar, visit, type Node, type YAMLMap } from 'yaml';
 import { z } from 'zod';
 import { ApiError, invalidRequest } from './errors.js';
 import {
@@ -62,21 +62,149 @@ export function mergeValue(current: unknown, incoming: unknown): unknown {
   return incoming;
 }
 
+const STRINGIFY = { flowCollectionPadding: false, lineWidth: 0 } as const;
+
+/** `key: value` as YAML text, styled like `like` (flow collection, quote type) when given. */
+function pairText(key: string, value: unknown, like?: unknown): string {
+  const doc = new Document({ [key]: value });
+  const node = (doc.contents as YAMLMap).items[0]!.value;
+  if (isCollection(like) && like.flow && isCollection(node)) node.flow = true;
+  if (isScalar(like) && isScalar(node) && typeof node.value === 'string') {
+    if (like.type === Scalar.QUOTE_DOUBLE || like.type === Scalar.QUOTE_SINGLE) node.type = like.type;
+  }
+  return doc.toString(STRINGIFY);
+}
+
+const lineStart = (s: string, pos: number) => s.lastIndexOf('\n', pos - 1) + 1;
+const lineEnd = (s: string, pos: number) => {
+  const nl = s.indexOf('\n', pos);
+  return nl === -1 ? s.length : nl + 1;
+};
+
+/**
+ * Edits one top-level key in place, touching only that key's text, so untouched keys keep their
+ * exact formatting (flow lists, quotes, comments, trailing spaces). Returns null when the YAML is
+ * not a plain block mapping; the caller then falls back to re-serializing.
+ */
+function editRaw(raw: string, key: string, value: unknown | undefined): string | null {
+  const doc = parseDocument(raw);
+  const map = doc.contents;
+  if (!isMap(map) || map.flow) return null;
+  const eol = raw.includes('\r\n') ? '\r\n' : '\n';
+  const lf = (s: string) => s.replace(/\n/g, eol);
+  const pair = map.items.find((p) => isScalar(p.key) && String(p.key.value) === key);
+  if (!pair) {
+    if (value === undefined) return raw;
+    return (raw === '' || raw.endsWith('\n') ? raw : `${raw}${eol}`) + lf(pairText(key, value));
+  }
+  const keyNode = pair.key as Scalar;
+  const valueNode = pair.value as Node | null;
+  const keyRange = keyNode.range!;
+  const valueEnd = valueNode?.range ? valueNode.range[1] : keyRange[1];
+  if (value === undefined) {
+    const start = lineStart(raw, keyRange[0]);
+    const end = raw[valueEnd - 1] === '\n' ? valueEnd : lineEnd(raw, valueEnd);
+    return raw.slice(0, start) + raw.slice(end);
+  }
+  if (lineStart(raw, keyRange[0]) !== keyRange[0]) return null;
+  // the generated text after the generated key: ": value\n" or ":\n  - a\n"
+  const generated = pairText(key, value, valueNode);
+  const genKey = (parseDocument(generated).contents as YAMLMap).items[0]!.key as Scalar;
+  let rest = generated.slice(genKey.range![1]);
+  const single = /^: ([^\n]*)\n$/.exec(rest);
+  const r = valueNode?.range;
+  if (single && r && r[0] < r[1] && !raw.slice(keyRange[1], r[1]).includes('\n')) {
+    // one line to one line: swap the value only, keeping the spacing and any trailing comment
+    return raw.slice(0, r[0]) + single[1] + raw.slice(r[1]);
+  }
+  let end = valueEnd;
+  if (raw[end - 1] !== '\n') {
+    rest = rest.replace(/\n$/, '');
+    // a multi-line value can't keep a same-line trailing comment: replace through the end of the line
+    if (rest.includes('\n')) end = raw.includes('\n', end) ? raw.indexOf('\n', end) : raw.length;
+    if (end > 0 && raw[end - 1] === '\r') end--;
+    // `a: # comment` has an empty value: keep a space before the comment
+    else if (/^[^\s]/.test(raw.slice(end)) && !/\s$/.test(rest)) rest += ' ';
+  }
+  return raw.slice(0, keyRange[1]) + lf(rest) + raw.slice(end);
+}
+
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+/** The frontmatter as plain data, or null when it doesn't parse fully (errors, dangling aliases). */
+function plainData(raw: string): Record<string, unknown> | null {
+  const doc = parseDocument(raw);
+  if (doc.errors.length > 0) return null;
+  try {
+    const v: unknown = doc.toJS();
+    if (v === null || v === undefined) return {};
+    return isPlainObject(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether `raw` holds exactly `before` with `changes` applied (undefined = key removed). */
+function isExactly(raw: string, before: Record<string, unknown>, changes: Map<string, unknown>): boolean {
+  const after = plainData(raw);
+  if (after === null) return false;
+  const keys = new Set([...Object.keys(before), ...Object.keys(after), ...changes.keys()]);
+  return [...keys].every((k) => same(after[k], changes.has(k) ? changes.get(k) : before[k]));
+}
+
+/** Anchors defined in `node` (or below it) that an alias elsewhere in the document refers to. */
+function referencedAnchors(doc: Document, node: unknown): string[] {
+  const defined = new Set<string>();
+  if (!isScalar(node) && !isCollection(node)) return [];
+  visit(node as Node, (_k, n) => {
+    if ((isScalar(n) || isCollection(n)) && n.anchor) defined.add(n.anchor);
+  });
+  const used: string[] = [];
+  visit(doc, { Alias: (_k, a) => void (defined.has(a.source) && used.push(a.source)) });
+  return [...new Set(used)];
+}
+
 function applyFrontmatterOp(text: string, op: Extract<PatchOp, { op: `frontmatter.${string}` }>): string {
-  const { frontmatterRaw, body } = splitFrontmatter(text);
+  const { frontmatterRaw, body, fences } = splitFrontmatter(text);
   const doc = frontmatterRaw === null ? new Document({}) : parseDocument(frontmatterRaw);
   if (doc.errors.length > 0) throw invalidRequest('The note has invalid frontmatter YAML; fix it with PUT or replace_text');
   if (doc.contents === null) doc.contents = doc.createNode({});
   if (!isMap(doc.contents)) throw invalidRequest('The note frontmatter is not a key/value mapping');
+  const before = frontmatterRaw === null ? {} : plainData(frontmatterRaw);
+  if (before === null) throw invalidRequest('The note frontmatter has a YAML alias that does not resolve; fix it with replace_text');
 
-  if (op.op === 'frontmatter.set') doc.set(op.key, op.value);
-  else if (op.op === 'frontmatter.unset') doc.delete(op.key);
-  else {
-    const current = (doc.toJS() ?? {}) as Record<string, unknown>;
-    for (const [k, v] of Object.entries(op.value)) doc.set(k, mergeValue(current[k], v));
+  const changes = new Map<string, unknown>(
+    op.op === 'frontmatter.set'
+      ? [[op.key, op.value]]
+      : op.op === 'frontmatter.unset'
+        ? [[op.key, undefined]]
+        : Object.entries(op.value).map(([k, v]) => [k, mergeValue(before[k], v)]),
+  );
+  // JSON in, JSON out: compare against what the value looks like after a round trip
+  for (const [k, v] of changes) if (v !== undefined) changes.set(k, JSON.parse(JSON.stringify(v)));
+  for (const key of changes.keys()) {
+    const pair = doc.contents.items.find((p) => isScalar(p.key) && String(p.key.value) === key);
+    const anchors = pair ? referencedAnchors(doc, pair.value) : [];
+    if (anchors.length > 0) {
+      throw invalidRequest(
+        `Frontmatter key "${key}" defines the YAML anchor &${anchors[0]}, which other keys refer to; edit it with replace_text`,
+      );
+    }
   }
-  const raw = isMap(doc.contents) && doc.contents.items.length === 0 ? null : String(doc);
-  return joinFrontmatter(raw, body);
+
+  let raw: string | null = frontmatterRaw ?? '';
+  for (const [key, value] of changes) raw = raw === null ? null : editRaw(raw, key, value);
+  if (raw === null || !isExactly(raw, before, changes)) {
+    // not a plain block mapping (or the in-place edit didn't give exactly the change): re-serialize
+    for (const [key, value] of changes) {
+      if (value === undefined) doc.delete(key);
+      else doc.set(key, value);
+    }
+    raw = doc.toString(STRINGIFY);
+    if (!isExactly(raw, before, changes)) throw invalidRequest('The frontmatter change could not be applied exactly; nothing was written');
+  }
+  const after = parseDocument(raw).contents;
+  return joinFrontmatter(after === null || (isMap(after) && after.items.length === 0) ? null : raw, body, fences);
 }
 
 const withNl = (s: string) => (s === '' || s.endsWith('\n') ? s : `${s}\n`);
@@ -199,7 +327,12 @@ function applyBlockOp(body: string, lines: Line[], id: string, op: 'append' | 'p
 }
 
 function applyContentOp(text: string, op: Extract<PatchOp, { op: 'append' | 'prepend' | 'replace' }>): string {
-  const { frontmatterRaw, body } = splitFrontmatter(text);
+  const split = splitFrontmatter(text);
+  const { frontmatterRaw } = split;
+  // Blank lines between the frontmatter and the body are kept as they are (one is added to an empty body).
+  const eol = split.fences?.open.endsWith('\r\n') ? '\r\n' : '\n';
+  const gap = frontmatterRaw === null ? '' : split.body === '' ? eol : (/^(?:\r?\n)*/.exec(split.body)![0] ?? '');
+  const body = split.body === '' ? '' : split.body.slice(gap.length);
   let next: string;
   if (!op.target) {
     if (op.op === 'replace') next = op.content;
@@ -209,7 +342,7 @@ function applyContentOp(text: string, op: Extract<PatchOp, { op: 'append' | 'pre
     if ('heading' in op.target) next = applyRegion(body, headingRegion(body, lines, op.target), op.op, op.content);
     else next = applyBlockOp(body, lines, op.target.block, op.op, op.content);
   }
-  return joinFrontmatter(frontmatterRaw, next);
+  return joinFrontmatter(frontmatterRaw, next === '' || /^\r?\n/.test(next) ? next : gap + next, split.fences);
 }
 
 function applyReplaceText(text: string, op: Extract<PatchOp, { op: 'replace_text' }>): string {

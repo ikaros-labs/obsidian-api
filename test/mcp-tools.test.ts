@@ -251,6 +251,11 @@ describe('tools', () => {
     write('Research/inbox/Movable.md', 'move me');
     const m = await callTool(agent, 'spall_move', { path: 'Research/inbox/Movable', destination: 'Research/inbox/Moved' });
     expect(m.data).toMatchObject({ from: 'Research/inbox/Movable.md', path: 'Research/inbox/Moved.md' });
+    write('Research/inbox/Sub/keep.md', 'k');
+    const into = await callTool(agent, 'spall_move', { path: 'Research/inbox/Moved', destination: 'Research/inbox/Sub/' });
+    expect(into.data).toMatchObject({ path: 'Research/inbox/Sub/Moved.md' });
+    const back = await callTool(agent, 'spall_move', { path: 'Research/inbox/Sub/Moved', destination: 'Research/inbox' });
+    expect(back.data).toMatchObject({ path: 'Research/inbox/Moved.md' });
     const { rev } = await read('Research/inbox/Moved');
     const stale = await callTool(agent, 'spall_trash', { path: 'Research/inbox/Moved', expected_rev: 'sha256:0000000000000000' });
     expect(stale.data.error).toMatchObject({ code: 'rev_mismatch', details: { current_rev: rev } });

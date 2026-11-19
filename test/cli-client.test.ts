@@ -114,6 +114,8 @@ describe('spall client commands', () => {
   it('mv and trash', async () => {
     await spall('agent', ['new', 'Research/inbox', 'Temp']);
     expect((await spall('agent', ['mv', 'Research/inbox/Temp', 'Research/inbox/Temp2'])).out).toBe('Research/inbox/Temp.md → Research/inbox/Temp2.md\n');
+    expect((await spall('agent', ['mv', 'Research/inbox/Temp2', 'Research/inbox/Folder/'])).out).toBe('Research/inbox/Temp2.md → Research/inbox/Folder/Temp2.md\n');
+    expect((await spall('agent', ['mv', 'Research/inbox/Folder/Temp2', 'Research/inbox'])).out).toBe('Research/inbox/Folder/Temp2.md → Research/inbox/Temp2.md\n');
     expect((await spall('agent', ['trash', 'Research/inbox/Temp2'])).out).toBe('trashed Research/inbox/Temp2.md\n');
   });
 

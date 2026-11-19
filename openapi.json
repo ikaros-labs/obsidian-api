@@ -2009,6 +2009,7 @@
         "tags": [
           "Files"
         ],
+        "description": "A .base file must be valid YAML with a valid base structure and filter/formula expressions (422 invalid_base otherwise).",
         "requestBody": {
           "required": true,
           "content": {

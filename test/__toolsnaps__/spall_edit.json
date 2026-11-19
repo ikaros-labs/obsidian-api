@@ -1,14 +1,14 @@
 {
   "name": "spall_edit",
   "title": "Edit a note",
-  "description": "Edits a note in place; all ops apply atomically or none do. Ops: append/prepend/replace (whole body, a heading's section or a block), replace_text (exact match), frontmatter.set/unset/merge (keeps value types), replace_all (whole file; must be the only op). Pass expected_rev (from spall_read) so you never overwrite a change you haven't seen.",
+  "description": "Edits a note in place; all ops apply atomically or none do. Ops: append/prepend/replace (whole body, a heading's section or a block), replace_text (exact match), frontmatter.set/unset/merge (keeps value types; other lines stay byte-for-byte), replace_all (whole file; must be the only op). A .base file takes replace_text and replace_all, and must stay a valid base. Pass expected_rev (from spall_read) so you never overwrite a change you haven't seen.",
   "inputSchema": {
     "type": "object",
     "properties": {
       "path": {
         "type": "string",
         "minLength": 1,
-        "description": "Note path relative to your root; \".md\" optional"
+        "description": "Note path relative to your root (\".md\" optional), or a .base file"
       },
       "expected_rev": {
         "description": "rev from spall_read; the edit fails if the note changed",

@@ -1,14 +1,14 @@
 {
   "name": "spall_read",
   "title": "Read a note",
-  "description": "Reads a note and its rev. view=markdown (default) returns the text; view=outline returns headings, block ids and frontmatter keys without the body (a cheap way to get the rev); view=frontmatter returns properties and tags; view=section returns one heading's section. Long notes are cut at max_chars.",
+  "description": "Reads a note and its rev. view=markdown (default) returns the text; view=outline returns headings, block ids and frontmatter keys without the body (a cheap way to get the rev); view=frontmatter returns properties and tags; view=section returns one heading's section; view=backlinks lists the notes linking to it, and its own links. A .base file: view=markdown returns its YAML (edit it with spall_edit), view=outline its views (filters, sort, columns, default_view). Long notes are cut at max_chars.",
   "inputSchema": {
     "type": "object",
     "properties": {
       "path": {
         "type": "string",
         "minLength": 1,
-        "description": "Note path relative to your root; \".md\" optional"
+        "description": "Note path relative to your root (\".md\" optional), or a .base file"
       },
       "view": {
         "default": "markdown",
@@ -17,7 +17,8 @@
           "markdown",
           "outline",
           "frontmatter",
-          "section"
+          "section",
+          "backlinks"
         ]
       },
       "heading": {
