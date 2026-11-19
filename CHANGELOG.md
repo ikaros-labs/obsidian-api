@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1.0 — unreleased
+## 1.1.0 — 2026-11-19
 
 Agents can use Spall directly, over MCP or a CLI, with the same tokens and folder scoping as REST.
 
