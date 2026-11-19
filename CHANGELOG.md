@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.2.1 — unreleased
+## 1.2.1 — 2026-11-19
 
 Fixes from the 1.2.0 agent evals.
 
