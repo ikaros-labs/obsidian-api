@@ -156,7 +156,7 @@ const read = tool({
   async run(ctx, a) {
     const url = fileUrl(a.path);
     if (isBase(a.path) && a.view !== 'markdown' && a.view !== 'outline') {
-      throw new ToolError('invalid_request', 'A .base file has view=markdown (its YAML) or view=outline (its views)');
+      throw new ToolError('invalid_request', 'A .base file is read as YAML (the default view) or as its views (view=outline)');
     }
     if (isBase(a.path) && a.view === 'outline') {
       const { json } = await api(ctx, { method: 'GET', url: `/v1/bases/${encPath(a.path)}` });
