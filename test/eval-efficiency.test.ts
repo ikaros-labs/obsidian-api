@@ -93,6 +93,47 @@ describe('item 4: copy-pasteable paths and did-you-mean', () => {
     expect((await get('agent', `/v1/notes/${enc('Projects/Tram Board.md')}`)).body.error.details).toBeUndefined();
   });
 
+  it('applies to the 1.2 note surfaces: backlinks, .base files, not_a_note', async () => {
+    const env2 = await setup({
+      accounts: { pm: { access: { '1. Projects': 'read', Notes: 'read', 'Notes/Private': 'none' } } },
+      prepare: (v) => {
+        mkdirSync(path.join(v, '1. Projects'), { recursive: true });
+        writeFileSync(path.join(v, '1. Projects/Tram Board.md'), 'tram\n');
+        writeFileSync(path.join(v, '1. Projects/Bookshelf.md'), 'shelf\n');
+        writeFileSync(path.join(v, '1. Projects/Board.base'), 'views:\n  - type: table\n    name: All\n');
+        writeFileSync(path.join(v, '1. Projects/cover.png'), 'png');
+        writeFileSync(path.join(v, 'Notes/Links to tram.md'), 'See [[Tram Board]].\n');
+      },
+    });
+    const run = async (argv: string[]) => {
+      let out = '';
+      let err = '';
+      await clientMain(argv, {
+        env: { SPALL_URL: 'http://spall.test', SPALL_TOKEN: 'tok-pm' },
+        out: (s) => (out += s),
+        err: (s) => (err += s),
+        stdin: async () => '',
+        fetch: injectFetch(env2),
+      });
+      return { out, err };
+    };
+    try {
+      // Backlinks print copy-pasteable paths.
+      expect((await run(['read', '1. Projects/Tram Board', '--backlinks'])).out).toBe('"Notes/Links to tram.md"\n');
+      expect((await run(['read', '1. Projects/Bookshelf', '--backlinks'])).out).toBe('(no notes you can read link to "1. Projects/Bookshelf.md")\n');
+      // A .base without its number prefix, or without ".base", is suggested.
+      expect((await run(['base', 'Projects/Board.base', '--views'])).err).toContain('Did you mean "1. Projects/Board.base"?');
+      const r = await env2.req('pm', { method: 'GET', url: `/v1/notes/${enc('1. Projects/Board')}` });
+      expect(r.json().error.details).toEqual({ did_you_mean: ['1. Projects/Board.base'] });
+      // not_a_note in the CLI: the path quoted, no REST endpoint details.
+      const nan = await run(['read', '1. Projects/cover.png']);
+      expect(nan.err).toMatch(/^spall: not_a_note: "1\. Projects\/cover\.png" is a file, not a note\..*\n$/);
+      expect(nan.err).not.toContain('/v1/');
+    } finally {
+      await env2.cleanup();
+    }
+  });
+
   it('carries suggestions into MCP and CLI errors', async () => {
     const pm = await mcpClient(env, 'pm');
     const r = await callTool(pm, 'spall_read', { path: 'Projects/Tram Board' });

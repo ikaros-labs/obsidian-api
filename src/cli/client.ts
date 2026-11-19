@@ -150,8 +150,13 @@ export async function clientMain(argv: string[], io: IO): Promise<number | null>
         .replace(/spall_(whoami|read|edit|trash)/g, 'spall $1')
         .replace(/spall_move/g, 'spall mv')
         .replace(/view=outline/g, '--outline');
-      // Suggestions, unknown properties and changed parameters are in the message already.
+      // not_a_note: quote the path as everywhere else; its REST endpoints (`use`) don't help here.
+      if (e.code === 'not_a_note' && typeof e.details?.path === 'string') {
+        e.message = e.message.replace(e.details.path, quotePath(e.details.path));
+      }
+      // Suggestions, unknown properties, changed parameters and not_a_note's path are in the message already.
       const { did_you_mean: _d, unknown_properties: _u, changed: _c, ...rest } = e.details ?? {};
+      if (e.code === 'not_a_note') for (const k of ['path', 'kind', 'use']) delete rest[k];
       const details = Object.keys(rest).length > 0 ? `\n${JSON.stringify(rest, null, 2)}` : '';
       if (json) io.err(`${JSON.stringify({ error: { code: e.code, message: e.message, ...(e.details ? { details: e.details } : {}) } })}\n`);
       else io.err(`spall: ${e.code}: ${e.message}${details}\n`);
@@ -349,7 +354,7 @@ const COMMANDS: Record<string, Command> = {
     if (v.backlinks) {
       const d = await tool(ctx, 'spall_read', { path, view: 'backlinks' });
       const back = d.backlinks as string[];
-      print(ctx, d, () => (back.length ? lines(back) : `(no notes you can read link to ${d.path})\n`));
+      print(ctx, d, () => (back.length ? lines(back.map(quotePath)) : `(no notes you can read link to ${quotePath(d.path as string)})\n`));
       return 0;
     }
     if (v.outline) {

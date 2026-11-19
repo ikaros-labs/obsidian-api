@@ -26,12 +26,12 @@ function requestedPath(req: FastifyRequest): string | null {
   }
 }
 
-/** Lowercase, no ".md", no "1. "-style number prefixes, single spaces. */
+/** Lowercase, no ".md" or ".base", no "1. "-style number prefixes, single spaces. */
 const norm = (p: string) =>
   p
     .normalize('NFC')
     .toLowerCase()
-    .replace(/\.md$/, '')
+    .replace(/\.(md|base)$/, '')
     .split('/')
     .map((s) => s.replace(/^\d+[.)]?\s+/, '').replace(/\s+/g, ' ').trim())
     .join('/');
