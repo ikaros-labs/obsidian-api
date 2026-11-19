@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.2.3 — unreleased
+## 1.2.3 — 2026-11-19
 
 - **Fix: bases `<`, `>`, `<=`, `>=` with an empty value, as in Obsidian.** An empty side (`Key:` or a missing property) counted as 0, so `Completed < date("2026-01-01")` matched notes with no `Completed` and `Score < 5` matched notes with no `Score`. Now a comparison with an empty side is empty, as in Obsidian: it doesn't match as a filter, `!(…)` of it does, and a formula `Score < 5` shows `null`. Other comparisons follow Obsidian too: a string right of a date or duration is read as one (`Completed < "2026-01-01"`), and a mixed comparison is plain JavaScript (`""` is a string, not empty, so `"" < date(…)` is true). Applies to `.base` views, `/v1/query`, `spall_query_base` and `spall base`.
 
