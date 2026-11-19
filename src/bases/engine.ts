@@ -279,8 +279,16 @@ export class BasesEngine {
     this.now = scope.now ?? new Date();
   }
 
+  /**
+   * Property types for one note. A date type is dropped where the value is empty (null, `""` or
+   * missing): the library would turn it into a date (`new Date(null)` is the epoch), where
+   * Obsidian treats it as empty.
+   */
   private rowTypes(fm: Record<string, unknown>): Record<string, PropertyValueType> {
     const types = { ...this.scope.propertyTypes };
+    for (const [k, t] of Object.entries(types)) {
+      if (t === 'date' && (fm[k] === null || fm[k] === undefined || fm[k] === '')) delete types[k];
+    }
     for (const [k, v] of Object.entries(fm)) {
       if (!(k in types) && typeof v === 'string' && ISO_DATE.test(v)) types[k] = 'date';
     }
