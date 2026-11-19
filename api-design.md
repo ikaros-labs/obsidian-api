@@ -126,6 +126,8 @@ Applies a list of operations **atomically**: either all of them succeed or none 
 - **Content** is written exactly as given. Heading levels are never adjusted.
 - **`replace_text`** fails if the string isn't found, or if it's found more times than `count` allows.
 - **`frontmatter.merge`** concatenates lists, merges objects, and replaces anything else.
+- **Frontmatter ops touch only their key.** Every other byte of the frontmatter stays as written (flow lists like `[ai]`, quotes, comments, spacing, key order). A changed scalar keeps its quote style and a changed flow list stays flow. A new key is added at the end. Only a frontmatter that is not a plain block mapping (e.g. `{a: 1}`) is re-serialized.
+- **The blank line(s) after the frontmatter are kept** by whole-body ops; appending to an empty body adds one.
 - **Response:** the new `rev` plus the Note minus `body`. Add `?return=full` to include the body.
 
 #### `DELETE /v1/notes/{path}`
@@ -138,7 +140,11 @@ Applies a list of operations **atomically**: either all of them succeed or none 
 { "destination": "Archive/Some article.md", "on_conflict": "fail" }
 ```
 - Requires `update` + `delete` access on the source and `create` on the destination.
+- **Into a folder:** a destination ending in `/` (e.g. `"Archive/"`), or naming an existing folder the account can see, means "move into that folder, keeping the file name". A folder the account can't see is treated as a file name, so hidden and missing folders behave the same.
 - Links pointing to the note are **not** rewritten.
+
+#### Not a note
+A path under `/v1/notes/` that names a visible non-note file (`Reading List.base`, `cover.png`) and has no `….md` twin returns 400 `not_a_note`, with `details.kind` (`base` or `file`) and `details.use` (the endpoint to use). Hidden and missing files return 404 as usual.
 
 ### Files (attachments, and any file that isn't a note)
 
@@ -150,6 +156,8 @@ Applies a list of operations **atomically**: either all of them succeed or none 
 | `POST /v1/files/{path}/move` | Same as for notes |
 
 A `.md` file can also be reached here as plain bytes.
+
+A `PUT` of a `.base` file is validated first: it must be YAML with a valid base structure, and every filter and formula expression must parse. Otherwise it returns 422 `invalid_base` (with `details.diagnostics` for expressions) and nothing is written. This is how `.base` files are edited; create and update grants apply as for notes.
 
 ### Folders
 
@@ -387,6 +395,7 @@ Returns the parsed base:
   "filters": { "and": ["file.folder == \"datasources/Reading List\""] },
   "formulas": {},
   "properties": { "Status": { "displayName": "Status" } },
+  "default_view": "To read",
   "views": [
     { "name": "To read", "type": "table", "filters": { "and": ["Status.containsAny(\"Not started\", \"In progress\")"] },
       "group_by": { "property": "Type", "direction": "ASC" }, "order": ["file.name", "Score", "…"] },
@@ -397,7 +406,7 @@ Returns the parsed base:
   "diagnostics": []
 }
 ```
-`diagnostics` lists expressions that don't parse, each as `{ where, message }` (e.g. `where: "views[2].filters"`), so you find out before running a query.
+`default_view` is the view a query runs when none is named (the first one). `diagnostics` lists expressions that don't parse, each as `{ where, message }` (e.g. `where: "views[2].filters"`), so you find out before running a query.
 
 ### `POST /v1/bases/{path}/query`
 ```json
@@ -476,7 +485,7 @@ Runs an unsaved view, with the same engine and the same response as a base query
 
 ### Not in this design (yet)
 - **`summaries`** (per-column totals, averages, …). These are view footers. They can be added as a `summaries` field in the response.
-- **Editing `.base` files** beyond what `PUT /v1/files/…` already allows.
+- **Structured view edits** (add/remove a view as JSON). `.base` files are edited as text, through `PUT /v1/files/…` (validated) or `spall_edit`.
 - **Creating notes "in" a view.** Obsidian works out a new note's properties from the view's filters, and the library supports this through `inferDefaultsFromFilter`. It would let the bot do `POST /v1/bases/Reading List.base/notes`, with the folder and `Status` filled in automatically. It's a candidate for later.
 
 ## Implementation notes
@@ -620,12 +629,12 @@ Status: implemented in 1.1. This replaces the original "REST only, no MCP endpoi
 | `spall_whoami` | `GET /v1/me` | always | read-only |
 | `spall_search` | `GET /v1/search`, or `/v1/related` with `related_to` | `read` | read-only |
 | `spall_list` | `GET /v1/folders/{path}`, or `/v1/tags` with `view=tags` | `read` | read-only |
-| `spall_read` | `GET /v1/notes/{path}`: `markdown`, `outline`, `frontmatter` or `section` | `read` | read-only |
+| `spall_read` | `GET /v1/notes/{path}`: `markdown`, `outline`, `frontmatter`, `section` or `backlinks` (`?include=backlinks`); for a `.base`, `GET /v1/files/{path}` (YAML) or `GET /v1/bases/{path}` (`outline`: views) | `read` | read-only |
 | `spall_query_base` | `POST /v1/bases/{path}/query`, `POST /v1/query` | `read` | read-only |
 | `spall_create` | `POST /v1/notes`, or `PUT` + `If-None-Match: *` for an exact path | `create` | not destructive |
-| `spall_edit` | `PATCH /v1/notes/{path}`; `PUT` + `If-Match` for `replace_all` | `update` | not destructive |
-| `spall_move` | `POST /v1/notes/{path}/move` | `update` + `delete` | not destructive |
-| `spall_trash` | `DELETE /v1/notes/{path}` (trash only, never `permanent`) | `delete` | destructive |
+| `spall_edit` | `PATCH /v1/notes/{path}`; `PUT` + `If-Match` for `replace_all`; for a `.base`, `PUT /v1/files/{path}` + `If-Match` (`replace_text` applied by the tool) | `update` | not destructive |
+| `spall_move` | `POST /v1/notes/{path}/move` (`/v1/files/…` for a `.base`) | `update` + `delete` | not destructive |
+| `spall_trash` | `DELETE /v1/notes/{path}` (`/v1/files/…` for a `.base`; trash only, never `permanent`) | `delete` | destructive |
 
 - `spall_read view=section` and `spall_edit` match headings with the same code (`headingRegion` in `patch.ts`), so they agree on which heading is meant and on ambiguity errors.
 - `spall_read` always returns `rev`. `view=outline` is the cheap way to get it without the body. Long notes are cut at a line boundary (`max_chars`, default 20,000) with `truncated: true` and a hint to read sections instead.

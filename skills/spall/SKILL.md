@@ -21,12 +21,16 @@ spall ls [folder] [--all] [--sort -modified] [--frontmatter]
 spall read "Notes/Some note"                   # raw markdown, pipeable
 spall read "Notes/Some note" --outline         # headings + rev, no body: cheap
 spall read "Notes/Some note" --section "Notes > Highlights"
+spall read "Notes/Some note" --backlinks       # notes that link to it
 spall new Inbox "A title" --body - --fm tags=[idea] --fm status=todo   < body.md
 spall edit "Notes/Some note" --rev <rev> --append-to "Notes > Highlights" --content "- new point"
 spall edit "Notes/Some note" --rev <rev> --set status=done --replace "old text" --with "new text"
 spall mv "Inbox/A title" "Projects/A title"
+spall mv "Inbox/A title" "Projects/"           # trailing / (or an existing folder): move into it, same name
 spall trash "Inbox/A title"                    # to the vault trash, never permanent
 spall base "Tasks.base" [--view V] [--cursor C] # a Bases view; follow "(more: --cursor …)" for the next page
+spall base "Tasks.base" --views                # its views: filters, sort, columns, default view
+spall read "Tasks.base"                        # the raw YAML; edit it with --replace/--with or --replace-all --content -
 ```
 
 `spall <command> --help` shows the options of one command.

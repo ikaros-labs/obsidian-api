@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.0 — unreleased
+
+- **Frontmatter edits keep untouched content byte-for-byte.** `frontmatter.set` / `unset` / `merge` rewrite only the targeted key: flow lists stay `[ai]` (not `[ ai ]`), and key order, quoting, comments, spacing and trailing spaces on other keys are kept. The blank line between the frontmatter and the body is kept, and appending to an empty body adds one. Long strings are no longer folded.
+- **Move into a folder.** A move destination ending in `/`, or naming an existing folder the account can see, means "move into it, keeping the file name" (`POST …/move`, `spall_move`, `spall mv`). Before, `spall mv note.md "3. Resources/Electronics/"` created the file `3. Resources/Electronics.md`.
+- **`.base` files over MCP and the CLI.**
+  - `spall_read` / `spall read` on a `.base` return its raw YAML; `view=outline` / `--outline` / `spall base X --views` list its views with filters, sort, columns and the default view. `GET /v1/bases/{path}` now returns `default_view`.
+  - `spall_edit` / `spall edit` edit a `.base` as text (`replace_text`, `replace_all`; new CLI flag `--replace-all`) under the account's `update` grant; `spall_move` and `spall_trash` take `.base` files too.
+  - `PUT /v1/files/{path}.base` (and so every edit) checks the YAML, the base structure and every filter/formula expression, and returns 422 `invalid_base` without writing.
+  - A visible non-note file asked for through a note route or tool returns 400 `not_a_note`, naming the endpoint/tool to use, instead of `not_found`. Hidden files still return 404.
+- **Backlinks over MCP and the CLI:** `spall_read view=backlinks` and `spall read <path> --backlinks` list the notes linking to a note (only notes the account can read), like `?include=backlinks` in REST.
+
 ## 1.1.0 — 2026-11-19
 
 Agents can use Spall directly, over MCP or a CLI, with the same tokens and folder scoping as REST.

@@ -161,11 +161,11 @@ Agents can use Spall without any glue code: through the **MCP endpoint** `POST /
 | `spall_whoami` | Root, grants and rate limit | – |
 | `spall_search` | BM25 search, or notes related to a note; paths and snippets, no bodies | `read` |
 | `spall_list` | Folder entries, or tags with counts | `read` |
-| `spall_read` | A note as markdown, outline (headings + `rev`, no body), frontmatter, or one section; long notes are cut at `max_chars` | `read` |
+| `spall_read` | A note as markdown, outline (headings + `rev`, no body), frontmatter, one section, or its backlinks; a `.base` file's YAML or its views; long notes are cut at `max_chars` | `read` |
 | `spall_query_base` | Evaluate a `.base` view or an ad-hoc Bases query | `read` |
 | `spall_create` | Create a note from a title, or at an exact path; never overwrites | `create` |
-| `spall_edit` | Atomic edits: append/prepend/replace under a heading or block, `replace_text`, frontmatter set/unset/merge, whole-file replace; `expected_rev` guards against lost updates | `update` |
-| `spall_move` | Move or rename | `update` + `delete` |
+| `spall_edit` | Atomic edits: append/prepend/replace under a heading or block, `replace_text`, frontmatter set/unset/merge (other lines stay byte-for-byte), whole-file replace; `.base` files as validated text; `expected_rev` guards against lost updates | `update` |
+| `spall_move` | Move or rename; a destination ending in `/` or an existing folder moves into it | `update` + `delete` |
 | `spall_trash` | Move to the trash (never permanent); the only tool marked destructive | `delete` |
 
 Note bodies come back wrapped in `<untrusted-content …>` markers, and the server instructions tell the model not to follow instructions inside them (`mcp.fence_untrusted`, on by default). Vaults hold imported articles and tweets, so this matters.
@@ -241,12 +241,13 @@ spall search <query> [--folder F] [--any] [--limit N] | spall search --related <
 spall ls [folder] [--all] [--sort -modified] [--frontmatter]
 spall tags [folder]
 spall read <path>                              # raw markdown, pipeable
-spall read <path> --outline | --frontmatter | --section "Notes > Highlights"
+spall read <path> --outline | --frontmatter | --section "Notes > Highlights" | --backlinks
+spall read <file.base> [--outline]             # a base's YAML, or its views
 spall new <folder> <title> [--body text|-] [--fm key=value ...]
 spall edit <path> [--rev R] [--set k=v] [--unset k] [--append-to H] [--prepend-to H]
-          [--replace-section H] [--append] [--content text|-] [--replace OLD --with NEW] [--ops file.json|-]
-spall mv <path> <destination> | spall trash <path> [--rev R]
-spall base <file.base> [--view V] [--limit N] [--cursor C]
+          [--replace-section H] [--append] [--replace-all] [--content text|-] [--replace OLD --with NEW] [--ops file.json|-]
+spall mv <path> <destination> | spall trash <path> [--rev R]   # destination "Folder/" moves into it
+spall base <file.base> [--view V] [--limit N] [--cursor C] | spall base <file.base> --views
 spall mcp [--read-only] [--tools a,b]          # MCP over stdio
 spall doctor                                   # URL reachable, token valid, grants, MCP enabled
 ```
@@ -334,7 +335,7 @@ All endpoints are under `/v1` (plus `/mcp`, see [Agents](#agents-mcp--cli)) and 
 | `POST /v1/notes` | Create from `{folder, title, frontmatter?, body?}` |
 | `PATCH /v1/notes/{path}` | `{"ops": [...]}`: append/prepend/replace under a heading or block, `frontmatter.set` / `unset` / `merge`, `replace_text` |
 | `DELETE /v1/notes/{path}` | Move to the trash (`?permanent=true` needs `purge`) |
-| `POST /v1/notes/{path}/move` | Move or rename (links are not rewritten) |
+| `POST /v1/notes/{path}/move` | Move or rename; a destination ending in `/` or an existing folder moves into it (links are not rewritten) |
 | `/v1/files/{path}` | The same for any file, as raw bytes (`Range` supported) |
 | `GET /v1/folders/{path}` | List: `depth`, `kind`, `sort`, `sample`, `include=frontmatter,body`, cursors |
 | `GET /v1/count/{path}`, `GET /v1/tags` | Counts and tags over readable notes |
