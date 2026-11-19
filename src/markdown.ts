@@ -173,7 +173,33 @@ export interface RawLink {
 const WIKI_RE = /!?\[\[([^[\]]+?)\]\]/g;
 const MD_LINK_RE = /!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g;
 
-export function extractLinks(lines: Line[]): RawLink[] {
+/**
+ * A property value that is a whole wikilink (`"[[X]]"`, `"[[X|alias]]"`), which Obsidian treats as a
+ * link, not text. Returns the target without heading/block part, and the alias if any.
+ */
+export function propertyWikilink(value: unknown): { target: string; display?: string } | null {
+  if (typeof value !== 'string') return null;
+  const m = /^\s*\[\[([^[\]]+)\]\]\s*$/.exec(value);
+  if (!m) return null;
+  const [target, ...display] = m[1]!.split('|');
+  const t = target!.split(/[#^]/)[0]!.trim();
+  if (t === '') return null;
+  return display.length ? { target: t, display: display.join('|') } : { target: t };
+}
+
+/** Wikilinks in frontmatter property values, including list items. */
+function frontmatterLinks(frontmatter: Frontmatter | null): string[] {
+  const out: string[] = [];
+  for (const v of Object.values(frontmatter ?? {})) {
+    for (const item of Array.isArray(v) ? v : [v]) {
+      const link = propertyWikilink(item);
+      if (link) out.push(link.target);
+    }
+  }
+  return out;
+}
+
+export function extractLinks(lines: Line[], frontmatterTargets: string[] = []): RawLink[] {
   const out: RawLink[] = [];
   const seen = new Set<string>();
   const add = (target: string, kind: RawLink['kind']) => {
@@ -182,6 +208,7 @@ export function extractLinks(lines: Line[]): RawLink[] {
     seen.add(`${kind}:${t}`);
     out.push({ target: t, kind });
   };
+  for (const t of frontmatterTargets) add(t, 'wiki');
   for (const line of lines) {
     if (line.code) continue;
     const text = stripInlineCode(line.text);
@@ -211,7 +238,7 @@ export function analyzeNote(text: string): NoteMeta {
   const { frontmatterRaw, body } = splitFrontmatter(text);
   const frontmatter = parseFrontmatter(frontmatterRaw);
   const lines = scanLines(body);
-  return { frontmatter, tags: extractTags(frontmatter, lines), links: extractLinks(lines) };
+  return { frontmatter, tags: extractTags(frontmatter, lines), links: extractLinks(lines, frontmatterLinks(frontmatter)) };
 }
 
 export interface OutlineHeading {
