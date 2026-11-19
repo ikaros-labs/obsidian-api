@@ -134,6 +134,17 @@ describe('item 5: frontmatter where/missing on listings', () => {
     expect((await ls('missing=Nope')).status).toBe(400);
     expect((await ls('where=Status')).status).toBe(400);
     expect((await ls('where=Status>=soon')).body.error.message).toContain('needs a number');
+    for (const w of ['Status==', 'Score=>3', 'Score=<3', 'Status!==Done']) {
+      const r = await ls(`where=${encodeURIComponent(w)}`);
+      expect(r.status).toBe(400);
+      expect(r.body.error.message).toContain('use one operator');
+    }
+    const text = await ls('where=Status%3E%3D5');
+    expect(text.status).toBe(400);
+    expect(text.body.error.message).toBe('Status has no number or date values in the listed notes; use = for text');
+    expect((await ls('where=Status%3E%3D2026-01-01')).body.error.message).toBe('Status has no number or date values in the listed notes; use = for text');
+    expect((await ls('where=Due%3E%3D5')).body.error.message).toContain('Due has no number values');
+    expect((await ls('where=Score%3E%3D5')).status).toBe(200);
   });
 
   it('works through spall_list and spall ls --where --missing', async () => {

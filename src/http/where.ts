@@ -20,6 +20,8 @@ export function parseWhere(list: string[]): Condition[] {
     const m = COND.exec(source);
     if (!m) throw invalidRequest(`Cannot parse where "${source}": expected Key=Value, Key!=Value, or Key>=, >, <=, < a number or date`);
     const [, key, op, raw] = m as unknown as [string, string, Condition['op'], string];
+    // "Status==" or "Score=>3": a second operator character, not a value.
+    if (/^[=!<>]/.test(raw)) throw invalidRequest(`Cannot parse where "${source}": use one operator: =, !=, >=, >, <=, <`);
     const value = raw.replace(/^(["'])(.*)\1$/s, '$2');
     if (op !== '=' && op !== '!=' && !NUM.test(value) && !DATE.test(value)) {
       throw invalidRequest(`Cannot parse where "${source}": ${op} needs a number or a YYYY-MM-DD date`);
@@ -55,6 +57,24 @@ export function matches(fm: Record<string, unknown>, c: Condition): boolean {
     return c.op === '=' ? eq : !eq;
   }
   return has && scalars(v).some((x) => compare(x, c));
+}
+
+/**
+ * Rejects ordered conditions (`>=` …) on a property that has no value of that kind (number or
+ * date) in any listed note: they could only match nothing.
+ */
+export function checkOrdered(conds: Condition[], frontmatters: Record<string, unknown>[]): void {
+  for (const c of conds) {
+    if (c.op === '=' || c.op === '!=') continue;
+    const numeric = NUM.test(c.value);
+    const values = frontmatters.flatMap((fm) => scalars(fm[c.key]));
+    const isNum = (x: unknown) => typeof x === 'number' || NUM.test(text(x));
+    const isDate = (x: unknown) => DATE.test(text(x));
+    if (values.some(numeric ? isNum : isDate)) continue;
+    // Name the kind it lacks when it has the other kind, else say it has neither.
+    const lacks = values.some(numeric ? isDate : isNum) ? (numeric ? 'number' : 'date') : 'number or date';
+    throw invalidRequest(`${c.key} has no ${lacks} values in the listed notes; use = for text`, { where: c.source });
+  }
 }
 
 /**

@@ -8,7 +8,7 @@ import { entryName, type Entry, type Kind } from '../vault-index.js';
 import { Ctx, iso, parse, project, type Services } from './context.js';
 import { doc } from './openapi.js';
 import { cursorKey, page as pageOf, sample } from './paging.js';
-import { checkKeys, matches, parseWhere } from './where.js';
+import { checkKeys, checkOrdered, matches, parseWhere } from './where.js';
 
 const PREFIX = '/v1/folders/';
 
@@ -165,6 +165,7 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
       const notes = matching.filter((i) => i.e.kind === 'note');
       const keys = new Set(notes.flatMap((i) => Object.keys(i.e.meta?.frontmatter ?? {})));
       checkKeys([...conds.map((c) => c.key), ...q.missing], keys);
+      checkOrdered(conds, notes.map((i) => i.e.meta?.frontmatter ?? {}));
       matching = notes.filter((i) => {
         const fm = i.e.meta?.frontmatter ?? {};
         return conds.every((c) => matches(fm, c)) && q.missing.every((k) => !Object.hasOwn(fm, k));
