@@ -5,7 +5,7 @@ import { containsPhrase, parseQuery, type Clause } from './query.js';
 import { tokenize, words } from './tokenize.js';
 
 /** Term weight per field: a word in the title counts as much as three in the body. */
-const FIELD_WEIGHTS = { name: 3, tags: 2, frontmatter: 1, body: 1 } as const;
+const FIELD_WEIGHTS = { name: 3, folders: 1, tags: 2, frontmatter: 1, body: 1 } as const;
 const K1 = 1.2;
 const B = 0.75;
 
@@ -20,6 +20,9 @@ interface Doc {
   seq: string[];
   /** Body without frontmatter, kept for snippets. */
   body: string;
+  frontmatter: Record<string, unknown> | null;
+  /** Terms that only come from folder names: no signal for "related". */
+  folderOnly: Set<string>;
 }
 
 /**
@@ -58,7 +61,13 @@ export interface Hit {
   /** Query terms (stemmed) the note matched. */
   matched: string[];
   /** Built on demand: only the returned page needs snippets. */
-  snippet(): string;
+  snippet(): Snippet;
+}
+
+export interface Snippet {
+  text: string;
+  /** Heading path of the section the text is in, like "Notes > Highlights"; null above the first heading. */
+  heading: string | null;
 }
 
 /** Flattens frontmatter values (not keys) into text: strings, numbers, and lists of them. */
@@ -136,21 +145,28 @@ export class SearchIndex {
     const seq: string[] = [];
     const fields: [keyof typeof FIELD_WEIGHTS, string][] = [
       ['name', entryName(e)],
+      ['folders', e.segs.slice(0, -1).join(' ')],
       ['tags', (e.meta?.tags ?? []).join(' ')],
       ['frontmatter', frontmatterText(e.meta?.frontmatter)],
       ['body', body],
     ];
     let len = 0;
+    const folderTerms = new Set<string>();
+    const otherTerms = new Set<string>();
     for (const [field, value] of fields) {
       const w = FIELD_WEIGHTS[field];
       if (seq.length > 0) seq.push('');
       for (const t of tokenize(value)) {
+        (field === 'folders' ? folderTerms : otherTerms).add(t);
         tf.set(t, (tf.get(t) ?? 0) + w);
         len += w;
         seq.push(t);
       }
     }
-    this.docs.set(e.path, { path: e.path, rev: e.rev ?? '', tf, len, seq, body });
+    this.docs.set(e.path, { path: e.path, rev: e.rev ?? '', tf, len, seq, body,
+      frontmatter: e.meta?.frontmatter ?? null,
+      folderOnly: new Set([...folderTerms].filter((t) => !otherTerms.has(t))),
+    });
     this.vocab = null;
     for (const t of tf.keys()) {
       let set = this.postings.get(t);
@@ -169,6 +185,12 @@ export class SearchIndex {
     }
     this.docs.delete(p);
     this.vocab = null;
+  }
+
+  /** How many notes a search in `scope` looks at. */
+  async count(scope: Scope): Promise<number> {
+    await this.sync();
+    return this.statsFor(scope).pool.length;
   }
 
   /** Statistics for a scope, from the cache when the index hasn't changed since. */
@@ -302,7 +324,7 @@ export class SearchIndex {
         }
       }
       if (clausesHit === 0 || (!opts.any && clausesHit < positive.length)) continue;
-      hits.push({ entry: e, score, matched, snippet: () => snippet(doc.body, new Set(matched)) });
+      hits.push({ entry: e, score, matched, snippet: () => snippetOf(doc.body, new Set(matched), doc.frontmatter) });
     }
     return hits.sort((a, b) => b.score - a.score || (a.entry.path < b.entry.path ? -1 : 1));
   }
@@ -320,7 +342,7 @@ export class SearchIndex {
     const inScope = stats.paths.has(path) ? 1 : 0;
     const candidates: { t: string; w: number; idf: number }[] = [];
     for (const [t, f] of source.tf) {
-      if (!goodMltTerm(t)) continue; // Numbers, dates, URL parts and 2-letter words are poor signals.
+      if (!goodMltTerm(t) || source.folderOnly.has(t)) continue; // Numbers, dates, URL parts and 2-letter words are poor signals.
       const idf = this.idf(stats, t);
       if (stats.df.get(t)! - inScope < 1) continue; // Nobody else has it.
       candidates.push({ t, w: f * idf, idf });
@@ -339,7 +361,7 @@ export class SearchIndex {
         matched.push(t);
       }
       if (matched.length === 0) continue;
-      hits.push({ entry: e, score, matched, snippet: () => snippet(doc.body, new Set(matched)) });
+      hits.push({ entry: e, score, matched, snippet: () => snippetOf(doc.body, new Set(matched), doc.frontmatter) });
     }
     hits.sort((a, b) => b.score - a.score || (a.entry.path < b.entry.path ? -1 : 1));
     return { terms: top.map((x) => x.t), hits };
@@ -347,19 +369,56 @@ export class SearchIndex {
 }
 
 const SNIPPET_CHARS = 160;
+const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)[\s#]*$/;
 
 /**
- * A window of `body` around the first line containing a matched term, on one line. Text lines
- * win over headings, which mostly repeat the title.
+ * The line of `body` that best shows why a note matched (most distinct matched terms; text lines
+ * win over headings, which mostly repeat the title), with the heading path above it, cut to a
+ * window centred on the first matched word. When only the frontmatter matched, a `Key: value` line
+ * from it; when nothing in the text did (a title or folder match), the first text line.
  */
-export function snippet(body: string, terms: Set<string>): string {
-  const lines = body.split('\n').filter((l) => words(l).length > 0);
-  const isHeading = (l: string) => /^\s{0,3}#{1,6}\s/.test(l);
-  const hits = lines.filter((l) => tokenize(l).some((t) => terms.has(t)));
-  const pick = hits.find((l) => !isHeading(l)) ?? hits[0] ?? lines.find((l) => !isHeading(l)) ?? lines[0] ?? '';
-  const text = pick.replace(/\s+/g, ' ').trim();
+export function snippetOf(body: string, terms: Set<string>, frontmatter?: Record<string, unknown> | null): Snippet {
+  const stack: { level: number; text: string }[] = [];
+  let best: { text: string; heading: string | null; score: number } | null = null;
+  let first: Snippet | null = null;
+  let fence: string | null = null;
+  for (const raw of body.split('\n')) {
+    const f = /^\s{0,3}(`{3,}|~{3,})/.exec(raw);
+    if (f && (fence === null || f[1]!.startsWith(fence))) fence = fence === null ? f[1]! : null;
+    if (words(raw).length === 0) continue;
+    const h = fence === null && !f ? HEADING.exec(raw) : null;
+    if (h) {
+      while (stack.length > 0 && stack.at(-1)!.level >= h[1]!.length) stack.pop();
+      stack.push({ level: h[1]!.length, text: h[2]! });
+    }
+    const heading = stack.length > 0 ? stack.map((x) => x.text).join(' > ') : null;
+    if (!h) first ??= { text: raw, heading };
+    const toks = new Set(tokenize(raw));
+    let n = 0;
+    for (const t of terms) if (toks.has(t)) n++;
+    const score = n * 2 + (h ? 0 : 1);
+    if (n > 0 && (!best || score > best.score)) best = { text: raw, heading, score };
+  }
+  let pick: Snippet | null = best;
+  if (!pick && frontmatter) {
+    for (const [k, v] of Object.entries(frontmatter)) {
+      const line = `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`;
+      if (tokenize(line).some((t) => terms.has(t))) {
+        pick = { text: line, heading: null };
+        break;
+      }
+    }
+  }
+  pick ??= first ?? { text: body.split('\n').find((l) => words(l).length > 0) ?? '', heading: null };
+  return { text: centre(pick.text.replace(/\s+/g, ' ').trim(), terms), heading: pick.heading };
+}
+
+/** The snippet text alone. */
+export const snippet = (body: string, terms: Set<string>): string => snippetOf(body, terms).text;
+
+/** A window of at most SNIPPET_CHARS around the first matching word. */
+function centre(text: string, terms: Set<string>): string {
   if (text.length <= SNIPPET_CHARS) return text;
-  // Centre the window on the first matching word.
   let at = 0;
   for (const m of text.toLowerCase().matchAll(/[\p{L}\p{M}\p{N}]+/gu)) {
     if (tokenize(m[0]).some((t) => terms.has(t))) {

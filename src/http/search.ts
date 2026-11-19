@@ -36,24 +36,35 @@ async function scopeOf(ctx: Ctx, folder: string): Promise<Scope> {
   return { key: ctx.account, folder: f.path, visible: ctx.visible };
 }
 
-function results(ctx: Ctx, hits: Hit[], q: { limit: number; cursor?: string; fields?: string }, key: unknown[]) {
-  const p = page(hits, q.limit, q.cursor, cursorKey([ctx.account.name, ...key]));
+async function results(
+  ctx: Ctx,
+  scope: Scope,
+  hits: Hit[],
+  q: { limit: number; cursor?: string; fields?: string },
+  kind: string,
+  params: Record<string, unknown>,
+) {
+  const p = page(hits, q.limit, q.cursor, cursorKey([ctx.account.name, kind], params));
   return {
+    // What was searched, so an empty result says where nothing matched.
+    scope: { folder: ctx.toApi(scope.folder), notes: await ctx.s.search.count(scope) },
     total: hits.length,
-    results: p.slice.map((h) =>
-      project(
+    results: p.slice.map((h) => {
+      const snip = h.snippet();
+      return project(
         {
           path: ctx.toApi(h.entry.path),
           name: entryName(h.entry),
           score: Math.round(h.score * 1000) / 1000,
           matched: h.matched,
-          snippet: h.snippet(),
+          snippet: snip.text,
+          heading: snip.heading,
           tags: h.entry.meta?.tags ?? [],
           modified: iso(h.entry.modified),
         },
         q.fields,
-      ),
-    ),
+      );
+    }),
     next_cursor: p.next_cursor,
     has_more: p.has_more,
   };
@@ -71,8 +82,8 @@ export function searchRoutes(app: FastifyInstance, s: Services) {
       if (e instanceof QueryError) throw invalidRequest(e.message);
       throw e;
     }
-    const { cursor: _c, fields: _f, ...rest } = q;
-    return { query: q.q, ...results(ctx, hits, q, ['search', rest]) };
+    const { cursor: _c, fields: _f, limit: _l, ...rest } = q;
+    return { query: q.q, ...(await results(ctx, scope, hits, q, 'search', rest)) };
   });
 
   app.get('/v1/related', { schema: doc({ summary: 'Readable notes most similar to a note', tag: 'Search', query: RelatedQuery }) }, async (req) => {
@@ -86,7 +97,7 @@ export function searchRoutes(app: FastifyInstance, s: Services) {
     const scope = await scopeOf(ctx, q.folder);
     const related = await s.search.related(source.path, scope, { terms: q.terms });
     if (!related) throw notFound();
-    const { cursor: _c, fields: _f, ...rest } = q;
-    return { path: ctx.toApi(source.path), terms: related.terms, ...results(ctx, related.hits, q, ['related', rest]) };
+    const { cursor: _c, fields: _f, limit: _l, ...rest } = q;
+    return { path: ctx.toApi(source.path), terms: related.terms, ...(await results(ctx, scope, related.hits, q, 'related', rest)) };
   });
 }

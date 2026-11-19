@@ -164,6 +164,70 @@ export function plainValue(v: RuntimeValue, toApiPath: (vaultPath: string) => st
   }
 }
 
+/** The expression strings in a filter (a string, or nested and/or/not lists of them). */
+function filterLeaves(f: unknown): string[] {
+  if (typeof f === 'string') return [f];
+  if (Array.isArray(f)) return f.flatMap(filterLeaves);
+  if (f && typeof f === 'object') return Object.values(f).flatMap(filterLeaves);
+  return [];
+}
+
+const GLOBALS = new Set(['file', 'note', 'formula', 'this', 'true', 'false', 'null']);
+
+/** Note properties an expression reads: bare names, `note.x` and `note["x"]`. */
+function noteProperties(source: string): string[] {
+  type Node = { type?: string; name?: string; callee?: Node; args?: Node[]; object?: Node; property?: Node | string; computed?: boolean; value?: unknown };
+  const out: string[] = [];
+  const visit = (n: unknown): void => {
+    if (Array.isArray(n)) return n.forEach(visit);
+    if (!n || typeof n !== 'object') return;
+    const node = n as Node;
+    switch (node.type) {
+      case 'Identifier':
+        if (node.name && !GLOBALS.has(node.name)) out.push(node.name);
+        return;
+      case 'Call':
+        if (node.callee?.type !== 'Identifier') visit(node.callee); // a global function's name is no property
+        return visit(node.args);
+      case 'Member': {
+        const p = node.property;
+        if (node.object?.type === 'Identifier' && node.object.name === 'note') {
+          const name = typeof p === 'string' ? p : typeof p?.value === 'string' ? p.value : null;
+          if (name !== null) out.push(name);
+          return;
+        }
+        visit(node.object);
+        if (node.computed) visit(p);
+        return;
+      }
+      default:
+        for (const [k, v] of Object.entries(node)) if (k !== 'span') visit(v);
+    }
+  };
+  visit(compileExpression(source).ast);
+  return out;
+}
+
+/**
+ * Filters that read a note property none of the queried notes has: almost always a typo or the
+ * wrong case (names are case-sensitive, as in Obsidian). Each gets a diagnostic, naming the
+ * property with the same name in another case when there is one.
+ */
+function unknownProperties(filters: { where: string; properties: string[] }[], universe: Entry[]): Diagnostic[] {
+  if (filters.every((f) => f.properties.length === 0)) return [];
+  const keys = new Set(universe.flatMap((e) => Object.keys(e.meta?.frontmatter ?? {})));
+  const lower = new Map([...keys].map((k) => [k.toLowerCase(), k]));
+  const out: Diagnostic[] = [];
+  for (const f of filters) {
+    for (const p of f.properties) {
+      if (keys.has(p)) continue;
+      const alt = lower.get(p.toLowerCase());
+      out.push({ where: f.where, message: `Unknown property "${p}": no queried note has it${alt ? `. Did you mean "${alt}"? Names are case-sensitive` : ''}` });
+    }
+  }
+  return out;
+}
+
 /**
  * Per-file evaluation inputs and vault-wide lookup tables. Building them is most of a query's cost,
  * so they are kept between queries as long as the index, the property types and the account's
@@ -300,13 +364,22 @@ export class BasesEngine {
     };
   }
 
-  /** Compiles a view's expressions; parse errors become diagnostics. */
+  /**
+   * Compiles a view's expressions; parse errors become diagnostics, and so does a filter that is a
+   * quoted string (it would match every row: a JSON-encoded filter, quoted once too often).
+   */
   static compile(spec: ViewSpec) {
     const diagnostics: Diagnostic[] = [];
-    const filters: { where: string; compiled: CompiledFilter }[] = spec.filters.map(({ where, filter }) => {
+    const filters: { where: string; compiled: CompiledFilter; literal: boolean; properties: string[] }[] = spec.filters.map(({ where, filter }) => {
       const compiled = compileFilter(filter);
       for (const d of compiled.diagnostics) if (d.severity === 'error') diagnostics.push({ where, message: d.message });
-      return { where, compiled };
+      const leaves = filterLeaves(filter);
+      const literal = leaves.some((l) => {
+        const ast = compileExpression(l).ast as { type?: string; value?: unknown } | null;
+        return ast?.type === 'Literal' && typeof ast.value === 'string';
+      });
+      if (literal) diagnostics.push({ where, message: 'This filter is a quoted string, so it would match every row. Remove the outer quotes' });
+      return { where, compiled, literal, properties: [...new Set(leaves.flatMap(noteProperties))] };
     });
     const expr = (id: string) => compileExpression(propertyExpression(id, spec.formulas));
     for (const [name, source] of Object.entries(spec.formulas)) {
@@ -338,7 +411,8 @@ export class BasesEngine {
       failures.set(where, f);
     };
 
-    const invalid = compiled.filters.some((f) => !f.compiled.valid);
+    const invalid = compiled.filters.some((f) => !f.compiled.valid || f.literal);
+    diagnostics.push(...unknownProperties(compiled.filters, universe));
     const rows: Row[] = [];
     if (!invalid) {
       for (const e of universe) {

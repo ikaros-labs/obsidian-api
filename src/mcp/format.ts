@@ -43,3 +43,29 @@ export function fence(content: string, attrs: Record<string, string>): string {
   const safe = content.replace(/<\/(untrusted-content)/gi, '<\\/$1');
   return `<untrusted-content source="spall"${a}>\n${safe}${safe.endsWith('\n') || safe === '' ? '' : '\n'}</untrusted-content>`;
 }
+
+export interface TreeData {
+  path: string;
+  notes: number;
+  total_folders: number;
+  folders: { name: string; depth: number; notes: number; traverse_only?: boolean; more_folders?: number }[];
+  truncated: boolean;
+  omitted?: number;
+}
+
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
+
+/** An indented folder tree, one folder per line with its note count. */
+export function treeText(t: TreeData): string {
+  const lines = [`${t.path === '' ? '(root)' : `${t.path}/`}  ${plural(t.notes, 'note')}, ${plural(t.total_folders, 'folder')}`];
+  for (const f of t.folders) {
+    const extra = [
+      ...(f.traverse_only ? ['traverse only'] : []),
+      plural(f.notes, 'note'),
+      ...(f.more_folders ? [`${plural(f.more_folders, 'subfolder')} below`] : []),
+    ];
+    lines.push(`${'  '.repeat(f.depth)}${f.name}/  ${extra.join(', ')}`);
+  }
+  if (t.truncated) lines.push(`[truncated: ${plural(t.omitted ?? 0, 'more folder')} not shown; raise limit or list a subfolder]`);
+  return `${lines.join('\n')}\n`;
+}

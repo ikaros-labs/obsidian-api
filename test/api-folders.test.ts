@@ -19,7 +19,7 @@ describe('GET /v1/folders', () => {
   it('lists one level with totals, hiding dotfiles', async () => {
     const { body } = await get('admin', '/v1/folders/');
     expect(paths(body)).toEqual(['Dashboards', 'Inbox.md', 'Notes', 'Reading List', 'Research', 'Templates']);
-    expect(body.total).toEqual({ notes: 1, files: 0, folders: 5 });
+    expect(body.total).toEqual({ entries: expect.any(Number), notes: 1, files: 0, folders: 5 });
     expect(body.results.find((r: { path: string }) => r.path === 'Inbox.md')).toMatchObject({
       kind: 'note',
       name: 'Inbox',
@@ -34,18 +34,18 @@ describe('GET /v1/folders', () => {
   it('lists recursively and filters by kind', async () => {
     const { body } = await get('bot', '/v1/folders/?depth=all&kind=note');
     expect(paths(body)).toEqual(['Archive/Old.md', 'Article One.md', 'Article Two.md']);
-    expect(body.total).toEqual({ notes: 3 });
+    expect(body.total).toEqual({ entries: expect.any(Number), notes: 3 });
     expect(paths((await get('bot', '/v1/folders/?kind=file')).body)).toEqual(['cover.png']);
   });
 
   it('shows parent folders only as a way to granted paths', async () => {
     const root = await get('agent', '/v1/folders/');
     expect(paths(root.body)).toEqual(['Notes', 'Research']);
-    expect(root.body.total).toEqual({ notes: 0, files: 0, folders: 2 });
+    expect(root.body.total).toEqual({ entries: expect.any(Number), notes: 0, files: 0, folders: 2 });
 
     const env2 = await get('eink', '/v1/folders/');
     expect(env2.body.results).toEqual([expect.objectContaining({ path: 'Dashboards', traverse_only: true })]);
-    expect(env2.body.total).toEqual({ notes: 0, files: 0, folders: 0 });
+    expect(env2.body.total).toEqual({ entries: expect.any(Number), notes: 0, files: 0, folders: 0 });
     const dash = await get('eink', '/v1/folders/Dashboards');
     expect(paths(dash.body)).toEqual(['Dashboards/eink.md']);
     expect(dash.body.total.notes).toBe(1);
@@ -87,7 +87,7 @@ describe('GET /v1/folders', () => {
     expect(paths(a.body)).toEqual(paths(b.body));
     expect(a.body.results[0]).toHaveProperty('body');
     expect(a.body.results[0]).toHaveProperty('frontmatter');
-    expect(a.body.total).toEqual({ notes: 3 });
+    expect(a.body.total).toEqual({ entries: expect.any(Number), notes: 3 });
   });
 
   it('limits include=body to small pages', async () => {

@@ -58,8 +58,16 @@ describe('GET /v1/search', () => {
 
   it('matches tags and inline tags', async () => {
     expect(paths((await search('admin', { q: 'longread' })).body)).toEqual(['Reading List/Article One.md']);
-    expect(paths((await search('admin', { q: 'private' })).body)).toEqual(['Notes/Private/Secret.md']);
-    expect(paths((await search('admin', { q: 'research' })).body).sort()).toEqual(['Notes/Ideas.md', 'Research/Plan.md']);
+    // "private" is a tag of Secret.md and a folder name of both.
+    expect(paths((await search('admin', { q: 'private' })).body)).toEqual(['Notes/Private/Secret.md', 'Notes/Private/Printer secrets.md']);
+    // Tagged #research, or in the Research folder.
+    expect(paths((await search('admin', { q: 'research' })).body).sort()).toEqual([
+      'Notes/Ideas.md',
+      'Research/Plan.md',
+      'Research/Resin.md',
+      'Research/inbox/Draft.md',
+      'Research/inbox/deep/Printers.md',
+    ]);
   });
 
   it('requires every word by default and any word with match=any', async () => {
@@ -162,7 +170,9 @@ describe('phrases and exclusions', () => {
   it('excludes words, phrases and prefixes', async () => {
     expect(paths((await search('admin', { q: 'printer -resin' })).body)).toEqual(['Research/inbox/deep/Printers.md', 'Notes/Private/Printer secrets.md']);
     expect(paths((await search('admin', { q: 'printer -"bambu printer"' })).body)).toEqual(['Notes/Private/Printer secrets.md', 'Research/Resin.md']);
-    expect(paths((await search('admin', { q: 'printer -hunt* -res*' })).body)).toEqual(['Research/inbox/deep/Printers.md']);
+    expect(paths((await search('admin', { q: 'printer -hunt* -resi*' })).body)).toEqual(['Research/inbox/deep/Printers.md']);
+    // Folder names count too: everything under Research/ is excluded.
+    expect(paths((await search('admin', { q: 'printer -research' })).body)).toEqual(['Notes/Private/Printer secrets.md']);
     expect(paths((await search('admin', { q: 'prusa -elegoo', match: 'any' })).body)).toEqual(['Research/inbox/deep/Printers.md']);
   });
 

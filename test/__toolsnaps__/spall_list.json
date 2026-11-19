@@ -1,7 +1,7 @@
 {
   "name": "spall_list",
   "title": "List a folder",
-  "description": "Lists notes, files and folders in a folder (view=entries), or the tags used under it with counts (view=tags). Folders marked traverse_only are shown only on the way to folders you can read.",
+  "description": "Lists a folder: notes, files and folders (view=entries), only folders as an indented tree with note counts (view=tree), or tags with counts (view=tags). where/missing filter notes by frontmatter. Folders marked traverse_only are shown only on the way to folders you can read.",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -15,6 +15,7 @@
         "type": "string",
         "enum": [
           "entries",
+          "tree",
           "tags"
         ]
       },
@@ -26,6 +27,27 @@
           "1",
           "all"
         ]
+      },
+      "max_depth": {
+        "default": 3,
+        "description": "view=tree: folder levels to show",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20
+      },
+      "where": {
+        "description": "Frontmatter conditions, ANDed: \"Status=Done\", \"Score>=4\", \"Due<2026-12-01\"; = matches list items",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "missing": {
+        "description": "Notes without these properties",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
       },
       "sort": {
         "default": "name",
@@ -40,10 +62,11 @@
         ]
       },
       "limit": {
-        "default": 50,
+        "default": 200,
+        "description": "Entries per page (view=tree: folders shown)",
         "type": "integer",
         "minimum": 1,
-        "maximum": 200
+        "maximum": 500
       },
       "cursor": {
         "description": "next_cursor from the previous page",

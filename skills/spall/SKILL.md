@@ -9,7 +9,7 @@ description: Read, search and edit an Obsidian vault through Spall with the `spa
 
 **Setup:** `SPALL_URL` (e.g. `http://127.0.0.1:8787`) and `SPALL_TOKEN` (`spl_…`) in the environment (`--url` can replace `SPALL_URL`; the token is read only from `SPALL_TOKEN`, never pass it as an argument). Install with `npm i -g @ikaros-labs/spall` (the command is `spall`), or run `npx -y @ikaros-labs/spall <command>`. `spall doctor` checks both.
 
-Paths are relative to your root; `.md` is optional. Add `--json` to any command for machine-readable output.
+Paths are relative to your root; `.md` is optional. Output prints paths in double quotes when they have spaces or a leading number (`"1. Projects/Note.md"`): the number is part of the folder name, so paste the path as printed. A not-found error suggests close paths. Add `--json` to any command for machine-readable output.
 
 ## Commands
 
@@ -18,6 +18,8 @@ spall whoami                                   # your root and grants: what you 
 spall search "query words" [--folder F] [--any] [--limit N]
 spall search --related "Notes/Some note"       # notes similar to one note
 spall ls [folder] [--all] [--sort -modified] [--frontmatter]
+spall ls "1. Projects" --where Status=Done --missing Completed   # filter notes by frontmatter (also !=, >=, <)
+spall tree [folder] [--depth N]                # folders only, with note counts: how the vault is organised
 spall read "Notes/Some note"                   # raw markdown, pipeable
 spall read "Notes/Some note" --outline         # headings + rev, no body: cheap
 spall read "Notes/Some note" --section "Notes > Highlights"

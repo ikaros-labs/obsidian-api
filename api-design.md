@@ -41,13 +41,15 @@ A self-hosted REST server over a folder of markdown files (an Obsidian vault or 
 - **Timestamps** are ISO 8601 in UTC.
 - **Pagination** uses one envelope everywhere: `{ "results": [...], "next_cursor": "…"|null, "has_more": bool }`.
   - `limit` defaults to 50, with a maximum of 500.
-  - Cursors are opaque, and are bound to the account and the request parameters.
+  - Cursors are opaque, and are bound to the account and the request parameters (but not to `limit` or `fields`, so the next page can be bigger). A cursor sent with other parameters is a 400 that names them: `Invalid cursor: depth, sort changed …`, with `details.changed`.
+  - `next_cursor` is null, and `has_more` false, once everything has been returned.
 - **`fields=`** is an optional list of the fields to return: `fields=path,frontmatter.status,modified`.
 - **Limits:** URLs over 16 KiB return 414. Path-like query parameters are capped at 1,024 characters, and `fields`/`cursor` at 512. Malformed HTTP (e.g. raw non-ASCII bytes in the URL) gets the same JSON error envelope. Unexpected errors never include messages or stack traces.
 - **Errors** use one envelope:
   ```json
   { "error": { "code": "rev_mismatch", "message": "…", "request_id": "…", "details": { "current_rev": "…" } } }
   ```
+  A `not_found` for a path can carry `details.did_you_mean`: up to three visible paths close to the one asked for (without `1. `-style prefixes, case or `.md`; the same name elsewhere; a near-miss spelling). Only paths the account can see are candidates, so the response for a hidden path is the same as for a missing one.
   The codes are `unauthorized`, `not_found`, `forbidden`, `already_exists`, `rev_mismatch`, `invalid_path`, `invalid_request`, `patch_target_not_found`, `patch_target_ambiguous`, `folder_not_empty`, `payload_too_large` and `rate_limited`.
 
 ---
@@ -171,11 +173,14 @@ Query parameters:
 - `limit` and `cursor` for paging
 - `sample=N`: returns N random entries from the filtered set instead of a page, for the reading-list bot. Add `seed=` to get the same picks again.
 - `include=body,frontmatter`: inlines note bodies and/or frontmatter (`body` only with `sample` or a `limit` of 20 or less)
+- `where=Key=Value` (repeatable, ANDed): notes whose frontmatter matches. Operators `=`, `!=`, and `>`, `>=`, `<`, `<=` with a number or a `YYYY-MM-DD` date. `=` matches any item of a list and ignores the value's case; `Key=` matches empty or missing values; `!=` also matches notes without the key.
+- `missing=Key` (repeatable): notes without that property.
+- With `where` or `missing`, only notes are listed. Property names are case-sensitive, as in Obsidian. A name that no listed note has is a 400 naming it (`details.unknown_properties`, with `did_you_mean` for the same name in another case), and so is a condition that doesn't parse.
 
 ```json
 {
   "path": "",
-  "total": { "notes": 214, "files": 3, "folders": 2 },
+  "total": { "entries": 219, "notes": 214, "files": 3, "folders": 2 },
   "results": [
     { "kind": "folder", "path": "Archive" },
     { "kind": "note", "path": "Some article.md", "name": "Some article", "rev": "…", "created": "…", "modified": "…", "size": 4211 }
@@ -183,9 +188,27 @@ Query parameters:
   "next_cursor": null, "has_more": false
 }
 ```
-- `total` covers the whole filtered set, not just the current page.
+- `total` covers the whole filtered set, not just the current page. `entries` counts everything that matched (traverse-only folders too), so `results` across all pages add up to it.
 - Folders and entries the account can't see are left out of both `results` and `total`.
 - Parent folders of a granted path are shown so the account can find its way there, marked `"traverse_only": true`. They list only the branch that leads to the grant and aren't counted in `total`. See *Ancestor visibility* under *Access model*.
+
+#### `GET /v1/tree/{path}`
+The folders under a folder, without their notes: an overview of how a vault is organised. An empty `{path}` means the account's root.
+
+Query parameters: `depth` (folder levels to list, 1–20, default 3) and `limit` (folders listed, 1–2000, default 200).
+```json
+{ "path": "", "depth": 3, "notes": 114, "total_folders": 20,
+  "folders": [
+    { "path": "1. Projects", "name": "1. Projects", "depth": 1, "notes": 16 },
+    { "path": "1. Projects/Archive", "name": "Archive", "depth": 2, "notes": 2, "more_folders": 1 },
+    { "path": "Private", "name": "Private", "depth": 1, "notes": 3, "traverse_only": true }
+  ],
+  "truncated": false }
+```
+- `folders` is depth-first in name order, so it reads as an indented tree.
+- `notes` counts the readable notes in the folder and everything below it, also below `depth`. `more_folders` counts the subfolders below `depth` that aren't listed.
+- Past `limit`, `truncated` is true and `omitted` says how many folders within `depth` were left out.
+- Scoped like a listing: hidden folders and notes are neither listed nor counted, and parents shown only on the way to a grant are marked `traverse_only`.
 
 #### `GET /v1/count/{path}`
 Counts what's in a folder without listing it. An empty `{path}` means the account's root.
@@ -467,6 +490,8 @@ Response for the "To read" view:
   - An unknown `view` returns 400, with `details.available_views` listing the base's views.
   - A request `filters` that doesn't parse returns 400, with `details.diagnostics`.
   - A broken filter inside the base returns 200 with no rows, and the problem listed in `diagnostics`.
+  - A filter that is a quoted string (`"\"status == 'x'\""`, a JSON-encoded filter quoted once too often) would match every row, so it counts as broken: 400 for a request filter, no rows for one in the base.
+  - A filter that reads a note property none of the queried notes has gets a diagnostic, naming the property with the same name in another case if there is one: `Unknown property "status": no queried note has it. Did you mean "Status"?`
   - Runtime failures are counted per expression: `{ where, message, rows }`.
   - A `.base` file that isn't valid YAML returns 422 `invalid_base`.
 - **No view at all:** a base without `views` runs its global filters, with `file.name` plus the keys of `properties` as columns.
@@ -518,9 +543,9 @@ Lexical full-text search, ranked with BM25.
 | `limit`, `cursor`, `fields` | As everywhere else; `limit` defaults to 20, with a maximum of 100 |
 
 ```json
-{ "query": "pcb laser", "total": 6,
+{ "query": "pcb laser", "scope": { "folder": "", "notes": 1812 }, "total": 6,
   "results": [{ "path": "inbox/making PCBs in-house.md", "name": "making PCBs in-house", "score": 14.703,
-                "matched": ["pcb", "laser"], "snippet": "…", "tags": [], "modified": "2026-10-09T…" }],
+                "matched": ["pcb", "laser"], "snippet": "…", "heading": "Notes > Tools", "tags": [], "modified": "2026-10-09T…" }],
   "next_cursor": "…", "has_more": true }
 ```
 Query syntax:
@@ -535,7 +560,9 @@ Query syntax:
 Positive clauses are ANDed (`match=all`) or ORed (`match=any`). Exclusions apply either way. A query can have at most 32 clauses, of which at most 5 are prefixes; more is a 400.
 
 - **Index.** All notes are kept in memory: weighted term frequencies plus the body for snippets. It is built in the background at startup and synced lazily before each query: only notes whose `rev` changed are read again, so API writes and watcher events show up on the next search.
-- **Fields.** A word in the title (file name) counts 3×, in `tags` 2×, and in frontmatter *values* or the body 1×. Frontmatter keys aren't indexed.
+- **Fields.** A word in the title (file name) counts 3×, in `tags` 2×, and in folder names, frontmatter *values* or the body 1×. Frontmatter keys aren't indexed. `related` ignores words that only come from folder names.
+- **Snippets** come from the body line with the most distinct matched terms (text lines before headings, fenced code skipped for headings), cut to 160 characters centred on the first match. `heading` is the path of headings above that line (null above the first one). When only frontmatter matched, the snippet is that `Key: value`; when only the title or a folder name did, it is the first text line.
+- **`scope`** says what was searched: the folder and the number of notes in it the account can read. MCP and the CLI use it to say "No matches for … in …" instead of returning nothing.
 - **Tokenisation.** Unicode letter and digit runs, lowercased, NFC, `ё` folded to `е`. Short English and Russian stopwords and single letters are dropped. Cyrillic words go through the Snowball Russian stemmer, and Latin words through a light English one (plural, `-ing`, `-ed`). The query uses the same pipeline, so `принтеры` finds `принтер`.
 - **Prefix queries** help where Snowball cuts related words differently (печать → `печа`, печатать → `печата`): `печа*` covers both.
 - **Phrases** are checked against each note's stored term sequence, after a cheap check that every term is present.
@@ -628,7 +655,7 @@ Status: implemented in 1.1. This replaces the original "REST only, no MCP endpoi
 |---|---|---|---|
 | `spall_whoami` | `GET /v1/me` | always | read-only |
 | `spall_search` | `GET /v1/search`, or `/v1/related` with `related_to` | `read` | read-only |
-| `spall_list` | `GET /v1/folders/{path}`, or `/v1/tags` with `view=tags` | `read` | read-only |
+| `spall_list` | `GET /v1/folders/{path}` (with `where`/`missing`), `/v1/tree/{path}` with `view=tree`, or `/v1/tags` with `view=tags` | `read` | read-only |
 | `spall_read` | `GET /v1/notes/{path}`: `markdown`, `outline`, `frontmatter`, `section` or `backlinks` (`?include=backlinks`); for a `.base`, `GET /v1/files/{path}` (YAML) or `GET /v1/bases/{path}` (`outline`: views) | `read` | read-only |
 | `spall_query_base` | `POST /v1/bases/{path}/query`, `POST /v1/query` | `read` | read-only |
 | `spall_create` | `POST /v1/notes`, or `PUT` + `If-None-Match: *` for an exact path | `create` | not destructive |
@@ -654,7 +681,7 @@ A tool is shown when **one** grant includes every permission it needs. Then each
 
 | Code | Tool error |
 |---|---|
-| `not_found` | Always the same text, without a request id, so a hidden note and a missing one can't be told apart |
+| `not_found` | Always the same text, without a request id, so a hidden note and a missing one can't be told apart. When the REST error has `did_you_mean` (drawn only from visible paths), the message lists them |
 | `forbidden` | The REST message plus a pointer to `spall_whoami` |
 | `rev_mismatch` | `current_rev`, plus the current section when the edit targeted a heading |
 | `patch_target_ambiguous` | The candidates with their `index` |

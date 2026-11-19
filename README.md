@@ -159,8 +159,8 @@ Agents can use Spall without any glue code: through the **MCP endpoint** `POST /
 | Tool | What it does | Needs |
 |---|---|---|
 | `spall_whoami` | Root, grants and rate limit | – |
-| `spall_search` | BM25 search, or notes related to a note; paths and snippets, no bodies | `read` |
-| `spall_list` | Folder entries, or tags with counts | `read` |
+| `spall_search` | BM25 search over titles, folder names, tags, frontmatter values and text, or notes related to a note; paths and snippets with their heading, no bodies | `read` |
+| `spall_list` | Folder entries (filtered by frontmatter with `where`/`missing`), a folder tree with note counts (`view=tree`), or tags with counts | `read` |
 | `spall_read` | A note as markdown, outline (headings + `rev`, no body), frontmatter, one section, or its backlinks; a `.base` file's YAML or its views; long notes are cut at `max_chars` | `read` |
 | `spall_query_base` | Evaluate a `.base` view or an ad-hoc Bases query | `read` |
 | `spall_create` | Create a note from a title, or at an exact path; never overwrites | `create` |
@@ -238,7 +238,8 @@ Any other stdio client: run `npx -y @ikaros-labs/spall mcp` with `SPALL_URL` and
 ```
 spall whoami                                   # root, grants, rate limit
 spall search <query> [--folder F] [--any] [--limit N] | spall search --related <path>
-spall ls [folder] [--all] [--sort -modified] [--frontmatter]
+spall ls [folder] [--all] [--sort -modified] [--frontmatter] [--where "Status=Done"] [--missing Key]
+spall tree [folder] [--depth N] [--limit N]    # folders only, indented, with note counts
 spall tags [folder]
 spall read <path>                              # raw markdown, pipeable
 spall read <path> --outline | --frontmatter | --section "Notes > Highlights" | --backlinks
@@ -252,7 +253,7 @@ spall mcp [--read-only] [--tools a,b]          # MCP over stdio
 spall doctor                                   # URL reachable, token valid, grants, MCP enabled
 ```
 
-Every command takes `--json`. Exit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 forbidden, 5 rev conflict, 6 rate limited, 7 auth.
+Paths with spaces or a leading number are printed in double quotes (`"1. Projects/Tram Board.md"`), ready to paste back. A not-found error suggests close paths the account can see. Every command takes `--json`. Exit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 forbidden, 5 rev conflict, 6 rate limited, 7 auth.
 
 ```
 $ spall read Research/Plan --outline
@@ -337,7 +338,8 @@ All endpoints are under `/v1` (plus `/mcp`, see [Agents](#agents-mcp--cli)) and 
 | `DELETE /v1/notes/{path}` | Move to the trash (`?permanent=true` needs `purge`) |
 | `POST /v1/notes/{path}/move` | Move or rename; a destination ending in `/` or an existing folder moves into it (links are not rewritten) |
 | `/v1/files/{path}` | The same for any file, as raw bytes (`Range` supported) |
-| `GET /v1/folders/{path}` | List: `depth`, `kind`, `sort`, `sample`, `include=frontmatter,body`, cursors |
+| `GET /v1/folders/{path}` | List: `depth`, `kind`, `sort`, `sample`, `include=frontmatter,body`, `where`, `missing`, cursors |
+| `GET /v1/tree/{path}` | Folder tree with note counts: `depth`, `limit` |
 | `GET /v1/count/{path}`, `GET /v1/tags` | Counts and tags over readable notes |
 | `GET /v1/bases/{path}`, `POST /v1/bases/{path}/query`, `POST /v1/query` | Obsidian Bases: read a `.base`, evaluate a view, or run an ad-hoc query |
 | `GET /v1/search`, `GET /v1/related` | BM25 search (`"phrases"`, `-exclusions`, `prefix*`) and more-like-this |
