@@ -41,6 +41,23 @@ export function stem(word: string): string {
   return word;
 }
 
+export type Language = 'en' | 'ru';
+
+/**
+ * The language a text is mostly written in, by the same split the stemmers use: Cyrillic words are
+ * Russian, plain Latin ones English. Null when it has no such words.
+ */
+export function languageOf(text: string): Language | null {
+  let ru = 0;
+  let en = 0;
+  for (const w of words(text)) {
+    if (CYRILLIC_RE.test(w)) ru++;
+    else if (LATIN_ONLY_RE.test(w)) en++;
+  }
+  if (ru + en === 0) return null;
+  return ru > en ? 'ru' : 'en';
+}
+
 export const isStopword = (w: string) => STOPWORDS.has(w);
 
 /** Index/query terms for `text`, in order (duplicates kept, so callers can count frequencies). */

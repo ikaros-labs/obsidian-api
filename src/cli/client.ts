@@ -305,7 +305,8 @@ const COMMANDS: Record<string, Command> = {
     if (total === 0) {
       const sc = d.scope as { folder: string; notes: number };
       const what = v.related !== undefined ? `notes related to ${quotePath(v.related as string)}` : JSON.stringify(pos.join(' '));
-      print(ctx, d, () => `No matches for ${what} in ${sc.folder === '' ? 'all folders you can read' : quotePath(`${sc.folder}/`)} (${plural(sc.notes, 'note')} searched).\n`);
+      const languages = typeof d.hint === 'string' ? d.hint.replace(/^No matches in [^.]*\.\s*/, '') : '';
+      print(ctx, d, () => `No matches for ${what} in ${sc.folder === '' ? 'all folders you can read' : quotePath(`${sc.folder}/`)} (${plural(sc.notes, 'note')} searched).\n${languages ? `${languages}\n` : ''}`);
       return 0;
     }
     const show = (h: (typeof hits)[number]) =>

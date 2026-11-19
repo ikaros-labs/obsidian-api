@@ -81,7 +81,7 @@ const search = tool({
   name: 'spall_search',
   title: 'Search notes',
   description:
-    'Full-text search (BM25) over the notes you can read, or notes related to one note. Give exactly one of query or related_to. Whole words (stemmed) match in titles, folder names, tags, frontmatter values and text. Returns paths, snippets with their heading, not bodies; read a hit with spall_read.',
+    'Full-text search (BM25) over the notes you can read, or notes related to one note. Give exactly one of query or related_to. Whole words (stemmed) match in titles, folder names, tags, frontmatter values and text. Returns paths, snippets with their heading, not bodies; read a hit with spall_read. Search doesn\'t translate: when nothing matches, the reply says which languages the notes are in, so search again in those.',
   input: z.object({
     query: z.string().optional().describe('Search words; "quoted phrases", -excluded, tag:x, path:x'),
     related_to: z.string().optional().describe('Note path: find notes similar to it instead'),
@@ -100,12 +100,13 @@ const search = tool({
         ? `/v1/search${qs({ q: a.query, folder: a.folder, match: a.match, limit: a.limit, cursor: a.cursor, fields })}`
         : `/v1/related${qs({ path: a.related_to, folder: a.folder, limit: a.limit, cursor: a.cursor, fields })}`;
     const { json } = await api(ctx, { method: 'GET', url });
-    const data = paged(json, { scope: json.scope, total: json.total, results: json.results });
+    const data = paged(json, { scope: json.scope, total: json.total, results: json.results, ...(json.hint ? { hint: json.hint } : {}) });
     if (json.total !== 0) return { data };
     const sc = json.scope as { folder: string; notes: number };
     const where = `${sc.folder === '' ? 'all folders you can read' : `"${sc.folder}"`} (${sc.notes} notes)`;
     const what = a.query !== undefined ? `"${a.query}"` : `notes related to "${a.related_to}"`;
-    return { data, text: `No matches for ${what} in ${where}. Try match=any, a prefix*, fewer words, or another folder.` };
+    const languages = typeof json.hint === 'string' ? json.hint.replace(/^No matches in [^.]*\.\s*/, '') : '';
+    return { data, text: `No matches for ${what} in ${where}. ${languages ? `${languages} ` : ''}Also try match=any, a prefix*, fewer words, or another folder.` };
   },
 });
 
