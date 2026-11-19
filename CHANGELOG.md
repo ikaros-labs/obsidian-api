@@ -10,6 +10,7 @@
   - `PUT /v1/files/{path}.base` (and so every edit) checks the YAML, the base structure and every filter/formula expression, and returns 422 `invalid_base` without writing.
   - A visible non-note file asked for through a note route or tool returns 400 `not_a_note`, naming the endpoint/tool to use, instead of `not_found`. Hidden files still return 404.
 - **Backlinks over MCP and the CLI:** `spall_read view=backlinks` and `spall read <path> --backlinks` list the notes linking to a note (only notes the account can read), like `?include=backlinks` in REST.
+- **Fix:** a wikilink `[[X]]` no longer resolves to a folder named `X`; it finds the note (e.g. the folder note `X/X.md`). This made backlinks and resolved `links` miss folder notes.
 
 ## 1.1.0 — 2026-11-19
 
