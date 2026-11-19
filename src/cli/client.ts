@@ -4,15 +4,18 @@ import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { parse as parseYaml, stringify } from 'yaml';
 import { fetchCaller, type Caller } from '../mcp/caller.js';
 import { ToolError } from '../mcp/errors.js';
+import { treeText, type TreeData } from '../mcp/format.js';
 import { buildMcpServer, runTool, visibleTools, type ToolName } from '../mcp/tools.js';
 
-export const CLIENT_COMMANDS = ['whoami', 'search', 'ls', 'tags', 'read', 'new', 'edit', 'mv', 'trash', 'base', 'mcp', 'doctor'];
+export const CLIENT_COMMANDS = ['whoami', 'search', 'ls', 'tree', 'tags', 'read', 'new', 'edit', 'mv', 'trash', 'base', 'mcp', 'doctor'];
 
 export const CLIENT_USAGE = `Client commands (need SPALL_TOKEN in the environment, and SPALL_URL or --url):
   whoami                                Your account, root and grants
   search <query> [--folder F] [--any] [--limit N] [--cursor C]
   search --related <path>               Notes similar to a note
-  ls [folder] [--all] [--sort -modified] [--frontmatter] [--limit N]
+  ls [folder] [--all] [--sort -modified] [--frontmatter] [--limit N] [--cursor C]
+      --where "Status=Done" (also !=, >=, >, <=, < with numbers or dates)  --missing Key
+  tree [folder] [--depth N] [--limit N]  Folders only, indented, with note counts
   tags [folder]
   read <path>                           Print the note (raw markdown), or a .base file's YAML
   read <path> --outline | --frontmatter | --section "A > B" [--index N]
@@ -32,6 +35,7 @@ export const CLIENT_USAGE = `Client commands (need SPALL_TOKEN in the environmen
   doctor                                Check the URL, token and grants
 
   --json   print JSON        "-" reads stdin        values in key=value are YAML (3, true, [a, b])
+  Paths with spaces or a leading number ("1. Projects/…") are printed in quotes, ready to paste.
 Exit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 forbidden, 5 rev conflict, 6 rate limited, 7 auth
 `;
 
@@ -56,7 +60,16 @@ const COMMON = {
 const OPTIONS: Record<string, ParseArgsConfig['options']> = {
   whoami: {},
   search: { folder: { type: 'string' }, any: { type: 'boolean' }, limit: { type: 'string' }, cursor: { type: 'string' }, related: { type: 'string' } },
-  ls: { all: { type: 'boolean' }, sort: { type: 'string' }, frontmatter: { type: 'boolean' }, limit: { type: 'string' }, cursor: { type: 'string' } },
+  ls: {
+    all: { type: 'boolean' },
+    sort: { type: 'string' },
+    frontmatter: { type: 'boolean' },
+    limit: { type: 'string' },
+    cursor: { type: 'string' },
+    where: { type: 'string', multiple: true },
+    missing: { type: 'string', multiple: true },
+  },
+  tree: { depth: { type: 'string' }, limit: { type: 'string' } },
   tags: {},
   read: { outline: { type: 'boolean' }, frontmatter: { type: 'boolean' }, section: { type: 'string' }, index: { type: 'string' }, backlinks: { type: 'boolean' } },
   new: { body: { type: 'string' }, fm: { type: 'string', multiple: true }, fail: { type: 'boolean' } },
@@ -137,8 +150,16 @@ export async function clientMain(argv: string[], io: IO): Promise<number | null>
         .replace(/spall_(whoami|read|edit|trash)/g, 'spall $1')
         .replace(/spall_move/g, 'spall mv')
         .replace(/view=outline/g, '--outline');
+      // not_a_note: quote the path as everywhere else; its REST endpoints (`use`) don't help here.
+      if (e.code === 'not_a_note' && typeof e.details?.path === 'string') {
+        e.message = e.message.replace(e.details.path, quotePath(e.details.path));
+      }
+      // Suggestions, unknown properties, changed parameters and not_a_note's path are in the message already.
+      const { did_you_mean: _d, unknown_properties: _u, changed: _c, ...rest } = e.details ?? {};
+      if (e.code === 'not_a_note') for (const k of ['path', 'kind', 'use']) delete rest[k];
+      const details = Object.keys(rest).length > 0 ? `\n${JSON.stringify(rest, null, 2)}` : '';
       if (json) io.err(`${JSON.stringify({ error: { code: e.code, message: e.message, ...(e.details ? { details: e.details } : {}) } })}\n`);
-      else io.err(`spall: ${e.code}: ${e.message}${e.details ? `\n${JSON.stringify(e.details, null, 2)}` : ''}\n`);
+      else io.err(`spall: ${e.code}: ${e.message}${details}\n`);
       return EXIT[e.code] ?? 1;
     }
     const cause = (e as { cause?: { message?: string } }).cause?.message;
@@ -234,6 +255,23 @@ function formatViews(d: Record<string, unknown>): string {
   ]);
 }
 
+/**
+ * A path as it can be pasted back into a shell: bare when that is safe, else in double quotes.
+ * A leading "1. " is always quoted, so it can't be mistaken for list numbering.
+ */
+export function quotePath(p: string): string {
+  if (/^[\w./@+-]+$/u.test(p) && !/^\d+\./.test(p)) return p;
+  return `"${p.replace(/["\\$`]/g, '\\$&')}"`;
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** "(63 entries…)" when everything is shown, else "(50 shown of 63 entries…; more: --cursor X)". */
+function footer(shown: number, total: string, d: Record<string, unknown>, cursorUsed: boolean): string {
+  if (!d.next_cursor && !cursorUsed) return `(${total})\n`;
+  return `(${shown} shown of ${total}${d.next_cursor ? `; more: --cursor ${d.next_cursor}` : '; last page'})\n`;
+}
+
 interface Heading {
   text: string;
   level: number;
@@ -262,8 +300,17 @@ const COMMANDS: Record<string, Command> = {
       v.related !== undefined
         ? await tool(ctx, 'spall_search', { related_to: v.related, ...args })
         : await tool(ctx, 'spall_search', { query: pos.join(' ') || arg(pos, 0, 'query'), match: v.any ? 'any' : 'all', ...args });
-    const hits = d.results as { path: string; score: number; snippet: string }[];
-    print(ctx, d, () => lines(hits.map((h) => `${h.path}  (${h.score})\n    ${h.snippet.replace(/\s+/g, ' ')}`)) + more(d));
+    const hits = d.results as { path: string; score: number; snippet: string; heading?: string | null }[];
+    const total = d.total as number;
+    if (total === 0) {
+      const sc = d.scope as { folder: string; notes: number };
+      const what = v.related !== undefined ? `notes related to ${quotePath(v.related as string)}` : JSON.stringify(pos.join(' '));
+      print(ctx, d, () => `No matches for ${what} in ${sc.folder === '' ? 'all folders you can read' : quotePath(`${sc.folder}/`)} (${plural(sc.notes, 'note')} searched).\n`);
+      return 0;
+    }
+    const show = (h: (typeof hits)[number]) =>
+      `${quotePath(h.path)}  score ${h.score}\n    ${h.heading ? `§ ${h.heading}: ` : ''}${h.snippet.replace(/\s+/g, ' ')}`;
+    print(ctx, d, () => lines(hits.map(show)) + footer(hits.length, plural(total, 'match', 'matches'), d, v.cursor !== undefined));
     return 0;
   },
 
@@ -275,11 +322,24 @@ const COMMANDS: Record<string, Command> = {
       limit: int(v.limit as string, 'limit'),
       cursor: v.cursor,
       frontmatter: v.frontmatter === true,
+      where: v.where,
+      missing: v.missing,
     });
-    const items = d.results as { kind: string; path: string; frontmatter?: unknown }[];
-    print(ctx, d, () =>
-      lines(items.map((e) => `${e.path}${e.kind === 'folder' ? '/' : ''}${e.frontmatter ? `  ${JSON.stringify(e.frontmatter)}` : ''}`)) + more(d),
-    );
+    const items = d.results as { kind: string; path: string; traverse_only?: boolean; frontmatter?: unknown }[];
+    const t = d.total as { entries: number; notes?: number; files?: number; folders?: number };
+    const kinds = [plural(t.notes ?? 0, 'note'), plural(t.files ?? 0, 'file'), plural(t.folders ?? 0, 'folder')].join(', ');
+    const row = (e: (typeof items)[number]) =>
+      `${quotePath(`${e.path}${e.kind === 'folder' ? '/' : ''}`)}${e.traverse_only ? '  (traverse only)' : ''}${e.frontmatter ? `  ${JSON.stringify(e.frontmatter)}` : ''}`;
+    print(ctx, d, () => {
+      if (t.entries === 0) return `No entries${v.where || v.missing ? ' match' : ''} in ${quotePath(`${d.path}/`)}.\n`;
+      return lines(items.map(row)) + footer(items.length, `${plural(t.entries, 'entry', 'entries')}: ${kinds}`, d, v.cursor !== undefined);
+    });
+    return 0;
+  },
+
+  async tree(ctx, v, pos) {
+    const d = await tool(ctx, 'spall_list', { view: 'tree', folder: pos[0] ?? '', max_depth: int(v.depth as string, 'depth'), limit: int(v.limit as string, 'limit') });
+    print(ctx, d, () => treeText(d as unknown as TreeData));
     return 0;
   },
 
@@ -294,7 +354,7 @@ const COMMANDS: Record<string, Command> = {
     if (v.backlinks) {
       const d = await tool(ctx, 'spall_read', { path, view: 'backlinks' });
       const back = d.backlinks as string[];
-      print(ctx, d, () => (back.length ? lines(back) : `(no notes you can read link to ${d.path})\n`));
+      print(ctx, d, () => (back.length ? lines(back.map(quotePath)) : `(no notes you can read link to ${quotePath(d.path as string)})\n`));
       return 0;
     }
     if (v.outline) {

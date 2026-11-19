@@ -56,11 +56,15 @@ describe('spall client commands', () => {
   });
 
   it('search, search --related, ls, tags', async () => {
-    expect((await spall('agent', ['search', 'existing', 'highlight'])).out).toMatch(/^Research\/Plan\.md {2}\(.+\)\n {4}- existing highlight/);
+    expect((await spall('agent', ['search', 'existing', 'highlight'])).out).toMatch(
+      /^Research\/Plan\.md {2}score [\d.]+\n {4}§ Plan > Notes > Highlights: - existing highlight\n\(1 match\)\n$/,
+    );
     const rel = await spall('agent', ['search', '--related', 'Research/Plan', '--json']);
     expect(JSON.parse(rel.out).results.map((r: { path: string }) => r.path)).toContain('Notes/Ideas.md');
-    expect((await spall('agent', ['ls', 'Research'])).out).toBe('Research/Plan.md\nResearch/inbox/\n');
-    expect((await spall('agent', ['ls', 'Research', '--all'])).out).toBe('Research/Plan.md\nResearch/inbox/\nResearch/inbox/Draft.md\n');
+    expect((await spall('agent', ['ls', 'Research'])).out).toBe('Research/Plan.md\nResearch/inbox/\n(2 entries: 1 note, 0 files, 1 folder)\n');
+    expect((await spall('agent', ['ls', 'Research', '--all'])).out).toBe(
+      'Research/Plan.md\nResearch/inbox/\nResearch/inbox/Draft.md\n(3 entries: 2 notes, 0 files, 1 folder)\n',
+    );
     expect((await spall('agent', ['tags'])).out).toContain('#research');
   });
 

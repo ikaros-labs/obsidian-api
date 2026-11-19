@@ -1,7 +1,7 @@
 {
   "name": "spall_query_base",
   "title": "Query a Base",
-  "description": "Evaluates an Obsidian Bases view (base = path of a .base file) or an ad-hoc query over folders (from). filters use Bases syntax, e.g. {\"and\": [\"status == \\\"todo\\\"\", \"file.hasTag(\\\"x\\\")\"]}.",
+  "description": "Evaluates an Obsidian Bases view (base = path of a .base file), or an ad-hoc query without a .base file: from (folders) with filters, select, sort, formulas. filters use Bases syntax, e.g. {\"and\": [\"Status == \\\"todo\\\"\", \"file.hasTag(\\\"x\\\")\"]}; property names are case-sensitive. Read diagnostics in the result.",
   "inputSchema": {
     "type": "object",
     "properties": {

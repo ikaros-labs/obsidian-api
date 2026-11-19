@@ -163,7 +163,7 @@ describe('tools', () => {
     const r = await callTool(agent, 'spall_search', { query: 'highlight' });
     expect(r.isError).toBe(false);
     expect((r.data.results as { path: string }[]).map((h) => h.path)).toContain('Research/Plan.md');
-    expect(Object.keys((r.data.results as object[])[0]!).sort()).toEqual(['modified', 'name', 'path', 'score', 'snippet']);
+    expect(Object.keys((r.data.results as object[])[0]!).sort()).toEqual(['heading', 'modified', 'name', 'path', 'score', 'snippet']);
     expect((await callTool(agent, 'spall_search', {})).isError).toBe(true);
     expect((await callTool(agent, 'spall_search', { query: 'x', related_to: 'Research/Plan' })).isError).toBe(true);
   });

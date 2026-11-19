@@ -13,6 +13,7 @@ import { noteRoutes } from './notes.js';
 import { doc, registerOpenApi, version } from './openapi.js';
 import { searchRoutes } from './search.js';
 import { statsRoutes } from './stats.js';
+import { suggestPaths } from './suggest.js';
 
 /** Routes that need a bearer token: the REST API and the MCP endpoint. */
 export function isAuthed(url: string): boolean {
@@ -86,6 +87,10 @@ export function buildServer(s: Services, opts: { logger?: FastifyServerOptions['
   app.setErrorHandler((err, req, reply) => {
     if (err instanceof ApiError) {
       if (err.code === 'rate_limited') reply.header('retry-after', String(err.details?.retry_after ?? 1));
+      if (err.code === 'not_found' && err.status === 404 && !err.details) {
+        const did_you_mean = suggestPaths(req, s);
+        if (did_you_mean.length > 0) return sendError(reply, new ApiError(404, 'not_found', err.message, { did_you_mean }), req.id);
+      }
       return sendError(reply, err, req.id);
     }
     const e = err as { code?: string; statusCode?: number; message: string };

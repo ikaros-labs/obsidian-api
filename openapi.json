@@ -903,6 +903,44 @@
             "in": "query",
             "name": "fields",
             "required": false
+          },
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            "in": "query",
+            "name": "where",
+            "required": false,
+            "description": "Notes whose frontmatter matches, e.g. Status=Done, Score>=4, Due<2026-12-01 (repeatable, ANDed)"
+          },
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            "in": "query",
+            "name": "missing",
+            "required": false,
+            "description": "Notes without this frontmatter property (repeatable)"
           }
         ],
         "responses": {
@@ -1036,6 +1074,44 @@
           },
           {
             "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            "in": "query",
+            "name": "where",
+            "required": false,
+            "description": "Notes whose frontmatter matches, e.g. Status=Done, Score>=4, Due<2026-12-01 (repeatable, ANDed)"
+          },
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            "in": "query",
+            "name": "missing",
+            "required": false,
+            "description": "Notes without this frontmatter property (repeatable)"
+          },
+          {
+            "schema": {
               "type": "string"
             },
             "in": "path",
@@ -1134,6 +1210,123 @@
             },
             "in": "query",
             "name": "permanent",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "description": "Path relative to the account root, percent-encoded per segment"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Success"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tree": {
+      "get": {
+        "summary": "Folder tree: subfolders to a depth, each with its count of readable notes (traverse_only: shown only on the way to readable ones)",
+        "tags": [
+          "Folders"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "default": 3,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            },
+            "in": "query",
+            "name": "depth",
+            "required": false
+          },
+          {
+            "schema": {
+              "default": 200,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2000
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Success"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tree/{path}": {
+      "get": {
+        "summary": "Folder tree: subfolders to a depth, each with its count of readable notes (traverse_only: shown only on the way to readable ones)",
+        "tags": [
+          "Folders"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "default": 3,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            },
+            "in": "query",
+            "name": "depth",
+            "required": false
+          },
+          {
+            "schema": {
+              "default": 200,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2000
+            },
+            "in": "query",
+            "name": "limit",
             "required": false
           },
           {

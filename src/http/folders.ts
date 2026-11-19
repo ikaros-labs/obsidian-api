@@ -8,12 +8,19 @@ import { entryName, type Entry, type Kind } from '../vault-index.js';
 import { Ctx, iso, parse, project, type Services } from './context.js';
 import { doc } from './openapi.js';
 import { cursorKey, page as pageOf, sample } from './paging.js';
+import { checkKeys, checkOrdered, matches, parseWhere } from './where.js';
 
 const PREFIX = '/v1/folders/';
 
 const KindFilter = z.enum(['note', 'file', 'folder', 'all']).default('all');
 const Depth = z.enum(['1', 'all']).default('1');
 const int = (min: number, max: number) => z.coerce.number().int().min(min).max(max);
+
+/** A repeatable query parameter: `?where=a&where=b`. */
+const many = z
+  .union([z.string(), z.array(z.string())])
+  .optional()
+  .transform((v) => (v === undefined ? [] : Array.isArray(v) ? v : [v]));
 
 const ListQuery = z.object({
   depth: Depth,
@@ -25,6 +32,13 @@ const ListQuery = z.object({
   seed: z.string().optional(),
   include: z.string().optional(),
   fields: z.string().optional(),
+  where: many.describe('Notes whose frontmatter matches, e.g. Status=Done, Score>=4, Due<2026-12-01 (repeatable, ANDed)'),
+  missing: many.describe('Notes without this frontmatter property (repeatable)'),
+});
+
+const TreeQuery = z.object({
+  depth: int(1, 20).default(3),
+  limit: int(1, 2000).default(200),
 });
 
 const CountQuery = z.object({ depth: Depth, kind: KindFilter });
@@ -48,7 +62,7 @@ export async function listableFolder(ctx: Ctx, segs: string[]): Promise<Entry> {
   return e;
 }
 
-function walk(ctx: Ctx, folder: Entry, all: boolean): Item[] {
+export function walk(ctx: Ctx, folder: Entry, all: boolean): Item[] {
   const out: Item[] = [];
   const visit = (dir: Entry) => {
     for (const child of ctx.s.index.childrenOf(dir.path)) {
@@ -64,6 +78,61 @@ function walk(ctx: Ctx, folder: Entry, all: boolean): Item[] {
   };
   visit(folder);
   return out;
+}
+
+interface TreeFolder {
+  path: string;
+  name: string;
+  depth: number;
+  /** Readable notes in the folder and everything below it. */
+  notes: number;
+  traverse_only?: true;
+  /** Subfolders below the depth limit, not listed. */
+  more_folders?: number;
+}
+
+/**
+ * The folders under `root` to `maxDepth`, depth-first in name order (so the list reads as an
+ * indented tree), with note counts. At most `limit` folders; `truncated` says some were left out.
+ */
+function folderTree(ctx: Ctx, root: Entry, maxDepth: number, limit: number) {
+  const folders: TreeFolder[] = [];
+  let omitted = 0;
+  const byPath = (a: Entry, b: Entry) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  /** Visits `dir`; returns its readable note count and the number of folders below it. */
+  const visit = (dir: Entry, depth: number): { notes: number; folders: number } => {
+    let notes = 0;
+    let below = 0;
+    for (const child of ctx.s.index.childrenOf(dir.path).sort(byPath)) {
+      if (child.kind === 'note') {
+        if (ctx.visible(child)) notes++;
+        continue;
+      }
+      if (child.kind !== 'folder') continue;
+      const readable = ctx.visible(child);
+      if (!readable && !ctx.traversable(child)) continue;
+      below++;
+      if (depth + 1 > maxDepth) {
+        const sub = visit(child, depth + 1);
+        notes += sub.notes;
+        below += sub.folders;
+        continue;
+      }
+      const item: TreeFolder = { path: ctx.toApi(child.path), name: entryName(child), depth: depth + 1, notes: 0 };
+      if (!readable) item.traverse_only = true;
+      const listed = folders.length < limit;
+      if (listed) folders.push(item);
+      else omitted++;
+      const sub = visit(child, depth + 1);
+      item.notes = sub.notes;
+      if (depth + 2 > maxDepth && sub.folders > 0) item.more_folders = sub.folders;
+      notes += sub.notes;
+      below += sub.folders;
+    }
+    return { notes, folders: below };
+  };
+  const all = visit(root, 0);
+  return { notes: all.notes, total_folders: all.folders, folders, truncated: omitted > 0, ...(omitted > 0 ? { omitted } : {}) };
 }
 
 const PLURAL: Record<Kind, 'notes' | 'files' | 'folders'> = { note: 'notes', file: 'files', folder: 'folders' };
@@ -89,7 +158,19 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
     }
 
     const items = walk(ctx, folder, q.depth === 'all');
-    const matching = items.filter((i) => q.kind === 'all' || i.e.kind === q.kind);
+    let matching = items.filter((i) => q.kind === 'all' || i.e.kind === q.kind);
+    if (q.where.length > 0 || q.missing.length > 0) {
+      // Frontmatter filters select notes only, and must name properties the listed notes use.
+      const conds = parseWhere(q.where);
+      const notes = matching.filter((i) => i.e.kind === 'note');
+      const keys = new Set(notes.flatMap((i) => Object.keys(i.e.meta?.frontmatter ?? {})));
+      checkKeys([...conds.map((c) => c.key), ...q.missing], keys);
+      checkOrdered(conds, notes.map((i) => i.e.meta?.frontmatter ?? {}));
+      matching = notes.filter((i) => {
+        const fm = i.e.meta?.frontmatter ?? {};
+        return conds.every((c) => matches(fm, c)) && q.missing.every((k) => !Object.hasOwn(fm, k));
+      });
+    }
     let page: Item[];
     let nextCursor: string | null = null;
 
@@ -107,8 +188,8 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
         const d = field === 'name' ? byPath(a, b) : a.e[field] - b.e[field] || byPath(a, b);
         return desc ? -d : d;
       });
-      const { cursor: _c, ...rest } = q;
-      const p = pageOf(matching, q.limit, q.cursor, cursorKey([ctx.account.name, folder.path, rest]));
+      const { cursor: _c, limit: _l, fields: _f, ...rest } = q;
+      const p = pageOf(matching, q.limit, q.cursor, cursorKey([ctx.account.name, folder.path], rest));
       page = p.slice;
       nextCursor = p.next_cursor;
     }
@@ -133,7 +214,7 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
     );
     return {
       path: ctx.toApi(folder.path),
-      total: counts(matching, q.kind),
+      total: { entries: matching.length, ...counts(matching, q.kind) },
       results,
       next_cursor: nextCursor,
       has_more: nextCursor !== null,
@@ -143,6 +224,20 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
   const listDoc = { summary: 'List a folder (traverse_only marks folders shown only on the way to readable ones)', tag: 'Folders', query: ListQuery };
   app.get('/v1/folders', { schema: doc(listDoc) }, async (req) => list(new Ctx(req, s)));
   app.get('/v1/folders/*', { schema: doc({ ...listDoc, url: '/v1/folders/{path}' }) }, async (req) => list(new Ctx(req, s)));
+
+  const tree = async (ctx: Ctx) => {
+    const q = parse(TreeQuery, ctx.req.query, 'query');
+    const folder = await listableFolder(ctx, ctx.urlPath('/v1/tree/'));
+    const out = folderTree(ctx, folder, q.depth, q.limit);
+    return { path: ctx.toApi(folder.path), depth: q.depth, ...out };
+  };
+  const treeDoc = {
+    summary: 'Folder tree: subfolders to a depth, each with its count of readable notes (traverse_only: shown only on the way to readable ones)',
+    tag: 'Folders',
+    query: TreeQuery,
+  };
+  app.get('/v1/tree', { schema: doc(treeDoc) }, async (req) => tree(new Ctx(req, s)));
+  app.get('/v1/tree/*', { schema: doc({ ...treeDoc, url: '/v1/tree/{path}' }) }, async (req) => tree(new Ctx(req, s)));
 
   const count = async (ctx: Ctx) => {
     const q = parse(CountQuery, ctx.req.query, 'query');

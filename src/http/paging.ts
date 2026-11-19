@@ -23,28 +23,58 @@ export function sample<T>(items: T[], n: number, seed?: string): T[] {
   return pool.slice(0, n);
 }
 
-/** A key that ties a cursor to the account, the target and every parameter except the cursor. */
-export function cursorKey(parts: unknown[]): string {
-  return createHash('sha256').update(JSON.stringify(parts)).digest('base64url').slice(0, 12);
+const hash = (x: unknown, n: number) => createHash('sha256').update(JSON.stringify(x ?? null)).digest('base64url').slice(0, n);
+
+/**
+ * Ties a cursor to the account and target (`scope`) and to every parameter that changes the result
+ * set (`params`; leave out the cursor, `limit` and `fields`, which only shape the page). Each
+ * parameter gets its own short hash, so a mismatch can name the parameter that changed.
+ */
+export interface CursorKey {
+  scope: string;
+  params: Record<string, string>;
 }
 
-export const encodeCursor = (offset: number, key: string) =>
-  Buffer.from(JSON.stringify({ o: offset, k: key })).toString('base64url');
+/** Unset and empty parameters are left out, which keeps cursors short. */
+const isSet = (v: unknown) => v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && v.length === 0);
 
-export function decodeCursor(cursor: string, key: string): number {
+export function cursorKey(scope: unknown[], params: Record<string, unknown> = {}): CursorKey {
+  return { scope: hash(scope, 10), params: Object.fromEntries(Object.entries(params).filter(([, v]) => isSet(v)).map(([k, v]) => [k, hash(v, 4)])) };
+}
+
+export const encodeCursor = (offset: number, key: CursorKey) =>
+  Buffer.from(JSON.stringify({ o: offset, k: key.scope, p: key.params })).toString('base64url');
+
+export function decodeCursor(cursor: string, key: CursorKey): number {
+  let parsed: unknown = null;
   try {
-    const c = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { o: unknown; k: unknown };
-    if (c.k === key && typeof c.o === 'number' && Number.isInteger(c.o) && c.o >= 0) return c.o;
+    parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
   } catch {
-    // fall through
+    // not JSON: rejected below
   }
-  throw invalidRequest('Invalid cursor (cursors only work with the same path and parameters)');
+  // Any JSON value can come back (null, a number, an array…): check the whole shape before use.
+  const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
+  const c = isObj(parsed) ? parsed : {};
+  const offset = c.o;
+  const paramsOk = c.p === undefined || (isObj(c.p) && Object.values(c.p).every((v) => typeof v === 'string'));
+  if (typeof offset !== 'number' || !Number.isInteger(offset) || offset < 0 || typeof c.k !== 'string' || !paramsOk) {
+    throw invalidRequest('Invalid cursor: pass next_cursor exactly as returned, or drop it to start over');
+  }
+  if (c.k !== key.scope) throw invalidRequest('Invalid cursor: it belongs to another folder, path or query. Drop it to start over');
+  const old = (c.p ?? {}) as Record<string, string>;
+  const changed = [...new Set([...Object.keys(old), ...Object.keys(key.params)])].filter((k) => old[k] !== key.params[k]).sort();
+  if (changed.length > 0) {
+    throw invalidRequest(`Invalid cursor: ${changed.join(', ')} changed since it was made. Use the same values, or drop the cursor to start over`, {
+      changed,
+    });
+  }
+  return offset;
 }
 
-/** Slices one page and builds the cursor for the next. */
-export function page<T>(items: T[], limit: number, cursor: string | undefined, key: string) {
+/** Slices one page and builds the cursor for the next; no cursor once everything was returned. */
+export function page<T>(items: T[], limit: number, cursor: string | undefined, key: CursorKey) {
   const offset = cursor ? decodeCursor(cursor, key) : 0;
   const slice = items.slice(offset, offset + limit);
   const next = offset + limit < items.length ? encodeCursor(offset + limit, key) : null;
-  return { slice, next_cursor: next, has_more: next !== null };
+  return { slice, offset, next_cursor: next, has_more: next !== null };
 }

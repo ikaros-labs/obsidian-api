@@ -5,7 +5,7 @@ import { containsPhrase, parseQuery, type Clause } from './query.js';
 import { tokenize, words } from './tokenize.js';
 
 /** Term weight per field: a word in the title counts as much as three in the body. */
-const FIELD_WEIGHTS = { name: 3, tags: 2, frontmatter: 1, body: 1 } as const;
+const FIELD_WEIGHTS = { name: 3, folders: 1, tags: 2, frontmatter: 1, body: 1 } as const;
 const K1 = 1.2;
 const B = 0.75;
 
@@ -20,6 +20,10 @@ interface Doc {
   seq: string[];
   /** Body without frontmatter, kept for snippets. */
   body: string;
+  frontmatter: Record<string, unknown> | null;
+  /** `tf` and `len` without folder names, which say nothing about how similar notes are ("related"). */
+  content: Map<string, number>;
+  contentLen: number;
 }
 
 /**
@@ -41,6 +45,9 @@ interface Stats {
   avgLen: number;
   /** Document frequencies, filled in lazily per term. */
   df: Map<string, number>;
+  /** The same without folder names, for "related". */
+  avgContentLen: number;
+  contentDf: Map<string, number>;
 }
 
 const MAX_SCOPES_PER_KEY = 32;
@@ -58,7 +65,13 @@ export interface Hit {
   /** Query terms (stemmed) the note matched. */
   matched: string[];
   /** Built on demand: only the returned page needs snippets. */
-  snippet(): string;
+  snippet(): Snippet;
+}
+
+export interface Snippet {
+  text: string;
+  /** Heading path of the section the text is in, like "Notes > Highlights"; null above the first heading. */
+  heading: string | null;
 }
 
 /** Flattens frontmatter values (not keys) into text: strings, numbers, and lists of them. */
@@ -136,11 +149,14 @@ export class SearchIndex {
     const seq: string[] = [];
     const fields: [keyof typeof FIELD_WEIGHTS, string][] = [
       ['name', entryName(e)],
+      ['folders', e.segs.slice(0, -1).join(' ')],
       ['tags', (e.meta?.tags ?? []).join(' ')],
       ['frontmatter', frontmatterText(e.meta?.frontmatter)],
       ['body', body],
     ];
     let len = 0;
+    const content = new Map<string, number>();
+    let contentLen = 0;
     for (const [field, value] of fields) {
       const w = FIELD_WEIGHTS[field];
       if (seq.length > 0) seq.push('');
@@ -148,9 +164,13 @@ export class SearchIndex {
         tf.set(t, (tf.get(t) ?? 0) + w);
         len += w;
         seq.push(t);
+        if (field === 'folders') continue;
+        content.set(t, (content.get(t) ?? 0) + w);
+        contentLen += w;
       }
     }
-    this.docs.set(e.path, { path: e.path, rev: e.rev ?? '', tf, len, seq, body });
+    const frontmatter = e.meta?.frontmatter ?? null;
+    this.docs.set(e.path, { path: e.path, rev: e.rev ?? '', tf, len, seq, body, frontmatter, content, contentLen });
     this.vocab = null;
     for (const t of tf.keys()) {
       let set = this.postings.get(t);
@@ -171,6 +191,12 @@ export class SearchIndex {
     this.vocab = null;
   }
 
+  /** How many notes a search in `scope` looks at. */
+  async count(scope: Scope): Promise<number> {
+    await this.sync();
+    return this.statsFor(scope).pool.length;
+  }
+
   /** Statistics for a scope, from the cache when the index hasn't changed since. */
   private statsFor(scope: Scope): Stats {
     let byFolder = this.stats.get(scope.key);
@@ -184,12 +210,14 @@ export class SearchIndex {
     const prefix = scope.folder === '' ? '' : `${scope.folder}/`;
     const pool: Stats['pool'] = [];
     let totalLen = 0;
+    let totalContentLen = 0;
     for (const doc of this.docs.values()) {
       if (!doc.path.startsWith(prefix)) continue;
       const e = this.index.get(doc.path);
       if (!e || !scope.visible(e)) continue;
       pool.push({ e, doc });
       totalLen += doc.len;
+      totalContentLen += doc.contentLen;
     }
     const stats: Stats = {
       version: this.syncedVersion,
@@ -197,6 +225,8 @@ export class SearchIndex {
       paths: new Set(pool.map((x) => x.doc.path)),
       avgLen: pool.length ? totalLen / pool.length || 1 : 1,
       df: new Map(),
+      avgContentLen: pool.length ? totalContentLen / pool.length || 1 : 1,
+      contentDf: new Map(),
     };
     // Drop stale entries; cap the number of folders cached per account.
     for (const [k, v] of byFolder) if (v.version !== this.syncedVersion) byFolder.delete(k);
@@ -205,19 +235,25 @@ export class SearchIndex {
     return stats;
   }
 
-  /** Document frequency of `term` among the scope's notes (cached in `stats`). */
-  private df(stats: Stats, term: string): number {
-    let df = stats.df.get(term);
+  /**
+   * Document frequency of `term` among the scope's notes (cached in `stats`). With `content`,
+   * occurrences in folder names don't count.
+   */
+  private df(stats: Stats, term: string, content = false): number {
+    const cache = content ? stats.contentDf : stats.df;
+    let df = cache.get(term);
     if (df === undefined) {
       df = 0;
-      for (const p of this.postings.get(term) ?? []) if (stats.paths.has(p)) df++;
-      stats.df.set(term, df);
+      for (const p of this.postings.get(term) ?? []) {
+        if (stats.paths.has(p) && (!content || this.docs.get(p)!.content.has(term))) df++;
+      }
+      cache.set(term, df);
     }
     return df;
   }
 
-  private idf(stats: Stats, term: string): number {
-    const df = this.df(stats, term);
+  private idf(stats: Stats, term: string, content = false): number {
+    const df = this.df(stats, term, content);
     const n = stats.pool.length;
     return Math.log(1 + (n - df + 0.5) / (df + 0.5));
   }
@@ -228,10 +264,11 @@ export class SearchIndex {
     return this.vocab;
   }
 
-  private bm25(stats: Stats, doc: Doc, term: string, idf: number): number {
-    const f = doc.tf.get(term);
+  private bm25(stats: Stats, doc: Doc, term: string, idf: number, content = false): number {
+    const f = (content ? doc.content : doc.tf).get(term);
     if (!f) return 0;
-    return idf * ((f * (K1 + 1)) / (f + K1 * (1 - B + (B * doc.len) / stats.avgLen)));
+    const [len, avg] = content ? [doc.contentLen, stats.avgContentLen] : [doc.len, stats.avgLen];
+    return idf * ((f * (K1 + 1)) / (f + K1 * (1 - B + (B * len) / avg)));
   }
 
   /**
@@ -302,7 +339,7 @@ export class SearchIndex {
         }
       }
       if (clausesHit === 0 || (!opts.any && clausesHit < positive.length)) continue;
-      hits.push({ entry: e, score, matched, snippet: () => snippet(doc.body, new Set(matched)) });
+      hits.push({ entry: e, score, matched, snippet: () => snippetOf(doc.body, new Set(matched), doc.frontmatter) });
     }
     return hits.sort((a, b) => b.score - a.score || (a.entry.path < b.entry.path ? -1 : 1));
   }
@@ -310,7 +347,9 @@ export class SearchIndex {
   /**
    * More like this: the notes in `scope` most similar to the note at `path`. The query is the
    * source note's `terms` most distinctive terms (weighted tf × idf over the scope, ignoring terms
-   * no other visible note has), scored with BM25 and OR. Returns null when `path` isn't indexed.
+   * no other visible note has), scored with BM25 and OR. Folder names are left out of every part of
+   * it (terms, frequencies, lengths): sharing a folder doesn't make notes similar. Returns null when
+   * `path` isn't indexed.
    */
   async related(path: string, scope: Scope, opts: { terms?: number } = {}): Promise<{ terms: string[]; hits: Hit[] } | null> {
     await this.sync();
@@ -319,10 +358,10 @@ export class SearchIndex {
     const stats = this.statsFor(scope);
     const inScope = stats.paths.has(path) ? 1 : 0;
     const candidates: { t: string; w: number; idf: number }[] = [];
-    for (const [t, f] of source.tf) {
+    for (const [t, f] of source.content) {
       if (!goodMltTerm(t)) continue; // Numbers, dates, URL parts and 2-letter words are poor signals.
-      const idf = this.idf(stats, t);
-      if (stats.df.get(t)! - inScope < 1) continue; // Nobody else has it.
+      const idf = this.idf(stats, t, true);
+      if (stats.contentDf.get(t)! - inScope < 1) continue; // Nobody else has it.
       candidates.push({ t, w: f * idf, idf });
     }
     candidates.sort((a, b) => b.w - a.w || (a.t < b.t ? -1 : 1));
@@ -333,13 +372,13 @@ export class SearchIndex {
       let score = 0;
       const matched: string[] = [];
       for (const { t, idf } of top) {
-        const s = this.bm25(stats, doc, t, idf);
+        const s = this.bm25(stats, doc, t, idf, true);
         if (s === 0) continue;
         score += s;
         matched.push(t);
       }
       if (matched.length === 0) continue;
-      hits.push({ entry: e, score, matched, snippet: () => snippet(doc.body, new Set(matched)) });
+      hits.push({ entry: e, score, matched, snippet: () => snippetOf(doc.body, new Set(matched), doc.frontmatter) });
     }
     hits.sort((a, b) => b.score - a.score || (a.entry.path < b.entry.path ? -1 : 1));
     return { terms: top.map((x) => x.t), hits };
@@ -347,19 +386,56 @@ export class SearchIndex {
 }
 
 const SNIPPET_CHARS = 160;
+const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)[\s#]*$/;
 
 /**
- * A window of `body` around the first line containing a matched term, on one line. Text lines
- * win over headings, which mostly repeat the title.
+ * The line of `body` that best shows why a note matched (most distinct matched terms; text lines
+ * win over headings, which mostly repeat the title), with the heading path above it, cut to a
+ * window centred on the first matched word. When only the frontmatter matched, a `Key: value` line
+ * from it; when nothing in the text did (a title or folder match), the first text line.
  */
-export function snippet(body: string, terms: Set<string>): string {
-  const lines = body.split('\n').filter((l) => words(l).length > 0);
-  const isHeading = (l: string) => /^\s{0,3}#{1,6}\s/.test(l);
-  const hits = lines.filter((l) => tokenize(l).some((t) => terms.has(t)));
-  const pick = hits.find((l) => !isHeading(l)) ?? hits[0] ?? lines.find((l) => !isHeading(l)) ?? lines[0] ?? '';
-  const text = pick.replace(/\s+/g, ' ').trim();
+export function snippetOf(body: string, terms: Set<string>, frontmatter?: Record<string, unknown> | null): Snippet {
+  const stack: { level: number; text: string }[] = [];
+  let best: { text: string; heading: string | null; score: number } | null = null;
+  let first: Snippet | null = null;
+  let fence: string | null = null;
+  for (const raw of body.split('\n')) {
+    const f = /^\s{0,3}(`{3,}|~{3,})/.exec(raw);
+    if (f && (fence === null || f[1]!.startsWith(fence))) fence = fence === null ? f[1]! : null;
+    if (words(raw).length === 0) continue;
+    const h = fence === null && !f ? HEADING.exec(raw) : null;
+    if (h) {
+      while (stack.length > 0 && stack.at(-1)!.level >= h[1]!.length) stack.pop();
+      stack.push({ level: h[1]!.length, text: h[2]! });
+    }
+    const heading = stack.length > 0 ? stack.map((x) => x.text).join(' > ') : null;
+    if (!h) first ??= { text: raw, heading };
+    const toks = new Set(tokenize(raw));
+    let n = 0;
+    for (const t of terms) if (toks.has(t)) n++;
+    const score = n * 2 + (h ? 0 : 1);
+    if (n > 0 && (!best || score > best.score)) best = { text: raw, heading, score };
+  }
+  let pick: Snippet | null = best;
+  if (!pick && frontmatter) {
+    for (const [k, v] of Object.entries(frontmatter)) {
+      const line = `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`;
+      if (tokenize(line).some((t) => terms.has(t))) {
+        pick = { text: line, heading: null };
+        break;
+      }
+    }
+  }
+  pick ??= first ?? { text: body.split('\n').find((l) => words(l).length > 0) ?? '', heading: null };
+  return { text: centre(pick.text.replace(/\s+/g, ' ').trim(), terms), heading: pick.heading };
+}
+
+/** The snippet text alone. */
+export const snippet = (body: string, terms: Set<string>): string => snippetOf(body, terms).text;
+
+/** A window of at most SNIPPET_CHARS around the first matching word. */
+function centre(text: string, terms: Set<string>): string {
   if (text.length <= SNIPPET_CHARS) return text;
-  // Centre the window on the first matching word.
   let at = 0;
   for (const m of text.toLowerCase().matchAll(/[\p{L}\p{M}\p{N}]+/gu)) {
     if (tokenize(m[0]).some((t) => terms.has(t))) {

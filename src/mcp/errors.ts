@@ -33,8 +33,14 @@ export function errorFromResponse(res: CallResult): ToolError {
     // not an envelope
   }
   const code = env.error?.code ?? (res.status === 404 ? 'not_found' : 'internal');
-  // not_found carries no detail at all, so a hidden note and a missing one read the same.
-  if (code === 'not_found') return new ToolError(code, HINTS.not_found!);
+  // not_found carries no detail beyond suggestions drawn from visible paths, so a hidden note and a
+  // missing one read the same.
+  if (code === 'not_found') {
+    const dym = env.error?.details?.did_you_mean;
+    if (!Array.isArray(dym) || dym.length === 0) return new ToolError(code, HINTS.not_found!);
+    const list = (dym as string[]).map((p) => JSON.stringify(p)).join(' or ');
+    return new ToolError(code, `Not found, or not visible to this account. Did you mean ${list}?`, { did_you_mean: dym });
+  }
   const details = { ...env.error?.details };
   if (code === 'rate_limited' && details.retry_after === undefined && res.headers['retry-after']) {
     details.retry_after = Number(res.headers['retry-after']);

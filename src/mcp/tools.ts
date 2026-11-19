@@ -7,7 +7,7 @@ import { applyPatch, PatchOpSchema, readSection } from '../patch.js';
 import { revOf } from '../vault-index.js';
 import { encPath, qs, type Caller, type CallRequest, type CallResult } from './caller.js';
 import { errorFromResponse, ToolError } from './errors.js';
-import { errorResult, fence, toResult, truncateLines, type ToolOutput } from './format.js';
+import { errorResult, fence, toResult, treeText, truncateLines, type TreeData, type ToolOutput } from './format.js';
 import { TOOL_NAMES, type ToolName } from './names.js';
 
 export { TOOL_NAMES, type ToolName } from './names.js';
@@ -81,40 +81,51 @@ const search = tool({
   name: 'spall_search',
   title: 'Search notes',
   description:
-    'Full-text search (BM25) over the notes you can read, or notes related to one note. Give exactly one of query or related_to. Returns paths, titles and snippets, not bodies; read a hit with spall_read.',
+    'Full-text search (BM25) over the notes you can read, or notes related to one note. Give exactly one of query or related_to. Whole words (stemmed) match in titles, folder names, tags, frontmatter values and text. Returns paths, snippets with their heading, not bodies; read a hit with spall_read.',
   input: z.object({
     query: z.string().optional().describe('Search words; "quoted phrases", -excluded, tag:x, path:x'),
     related_to: z.string().optional().describe('Note path: find notes similar to it instead'),
     folder,
     match: z.enum(['all', 'any']).default('all').describe('Require all words (default) or any'),
-    limit: z.number().int().min(1).max(50).default(10),
+    limit: z.number().int().min(1).max(100).default(20),
     cursor,
   }),
   annotations: RO,
   needs: ['read'],
   async run(ctx, a) {
     if ((a.query === undefined) === (a.related_to === undefined)) throw new ToolError('invalid_request', 'Give exactly one of query or related_to');
-    const fields = 'path,name,score,snippet,modified';
+    const fields = 'path,name,score,snippet,heading,modified';
     const url =
       a.query !== undefined
         ? `/v1/search${qs({ q: a.query, folder: a.folder, match: a.match, limit: a.limit, cursor: a.cursor, fields })}`
         : `/v1/related${qs({ path: a.related_to, folder: a.folder, limit: a.limit, cursor: a.cursor, fields })}`;
     const { json } = await api(ctx, { method: 'GET', url });
-    return { data: { total: json.total, results: json.results, next_cursor: json.next_cursor ?? null } };
+    const data = paged(json, { scope: json.scope, total: json.total, results: json.results });
+    if (json.total !== 0) return { data };
+    const sc = json.scope as { folder: string; notes: number };
+    const where = `${sc.folder === '' ? 'all folders you can read' : `"${sc.folder}"`} (${sc.notes} notes)`;
+    const what = a.query !== undefined ? `"${a.query}"` : `notes related to "${a.related_to}"`;
+    return { data, text: `No matches for ${what} in ${where}. Try match=any, a prefix*, fewer words, or another folder.` };
   },
 });
+
+/** `next_cursor` only when there is a next page. */
+const paged = (json: Record<string, unknown>, data: Record<string, unknown>) => (json.next_cursor ? { ...data, next_cursor: json.next_cursor } : data);
 
 const list = tool({
   name: 'spall_list',
   title: 'List a folder',
   description:
-    'Lists notes, files and folders in a folder (view=entries), or the tags used under it with counts (view=tags). Folders marked traverse_only are shown only on the way to folders you can read.',
+    'Lists a folder: notes, files and folders (view=entries), only folders as an indented tree with note counts (view=tree), or tags with counts (view=tags). where/missing filter notes by frontmatter. Folders marked traverse_only are shown only on the way to folders you can read.',
   input: z.object({
     folder,
-    view: z.enum(['entries', 'tags']).default('entries'),
+    view: z.enum(['entries', 'tree', 'tags']).default('entries'),
     depth: z.enum(['1', 'all']).default('1').describe('"all" lists the whole subtree'),
+    max_depth: z.number().int().min(1).max(20).default(3).describe('view=tree: folder levels to show'),
+    where: z.array(z.string()).optional().describe('Frontmatter conditions, ANDed: "Status=Done", "Score>=4", "Due<2026-12-01"; = matches list items'),
+    missing: z.array(z.string()).optional().describe('Notes without these properties'),
     sort: z.enum(['name', '-modified', 'modified', '-created', 'created', '-name']).default('name'),
-    limit: z.number().int().min(1).max(200).default(50),
+    limit: z.number().int().min(1).max(500).default(200).describe('Entries per page (view=tree: folders shown)'),
     cursor,
     frontmatter: z.boolean().default(false).describe('Include each note\'s frontmatter'),
   }),
@@ -125,17 +136,19 @@ const list = tool({
       const { json } = await api(ctx, { method: 'GET', url: `/v1/tags${qs({ folder: a.folder })}` });
       return { data: json };
     }
+    if (a.view === 'tree') {
+      const { json } = await api(ctx, { method: 'GET', url: `/v1/tree/${encPath(a.folder)}${qs({ depth: a.max_depth, limit: a.limit })}` });
+      return { data: json, text: treeText(json as unknown as TreeData) };
+    }
     const fields = `kind,path,name,rev,modified,traverse_only${a.frontmatter ? ',frontmatter' : ''}`;
-    const url = `/v1/folders/${encPath(a.folder)}${qs({
-      depth: a.depth,
-      sort: a.sort,
-      limit: a.limit,
-      cursor: a.cursor,
-      include: a.frontmatter ? 'frontmatter' : undefined,
-      fields,
-    })}`;
-    const { json } = await api(ctx, { method: 'GET', url });
-    return { data: { path: json.path, total: json.total, results: json.results, next_cursor: json.next_cursor ?? null } };
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries({ depth: a.depth, sort: a.sort, limit: a.limit, cursor: a.cursor, include: a.frontmatter ? 'frontmatter' : undefined, fields })) {
+      if (v !== undefined) params.append(k, String(v));
+    }
+    for (const w of a.where ?? []) params.append('where', w);
+    for (const m of a.missing ?? []) params.append('missing', m);
+    const { json } = await api(ctx, { method: 'GET', url: `/v1/folders/${encPath(a.folder)}?${params}` });
+    return { data: paged(json, { path: json.path, total: json.total, results: json.results }) };
   },
 });
 
@@ -205,7 +218,7 @@ const queryBase = tool({
   name: 'spall_query_base',
   title: 'Query a Base',
   description:
-    'Evaluates an Obsidian Bases view (base = path of a .base file) or an ad-hoc query over folders (from). filters use Bases syntax, e.g. {"and": ["status == \\"todo\\"", "file.hasTag(\\"x\\")"]}.',
+    'Evaluates an Obsidian Bases view (base = path of a .base file), or an ad-hoc query without a .base file: from (folders) with filters, select, sort, formulas. filters use Bases syntax, e.g. {"and": ["Status == \\"todo\\"", "file.hasTag(\\"x\\")"]}; property names are case-sensitive. Read diagnostics in the result.',
   input: z.object({
     base: z.string().optional().describe('Path of a .base file'),
     view: z.string().optional().describe('View name in the base (default: its first view)'),
