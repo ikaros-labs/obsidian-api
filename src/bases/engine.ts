@@ -5,7 +5,13 @@ import {
   compileFilter,
   createFileContext,
   createLinkResolutionMap,
+  dateValue,
+  durationToMilliseconds,
+  Evaluator,
   frontmatterLink,
+  nullValue,
+  boolValue,
+  parseDuration,
   normalizeFrontmatterProperties,
   stringifyValue,
   toPlain,
@@ -20,6 +26,56 @@ import {
 import type { ObsidianType } from '../config.js';
 import { propertyWikilink } from '../markdown.js';
 import type { Entry, VaultIndex } from '../vault-index.js';
+
+/**
+ * `<`, `>`, `<=` and `>=` as Obsidian evaluates them; the library coerces Null to 0, so
+ * `Completed < date("2026-01-01")` would match notes with no `Completed`. In Obsidian a Null side
+ * makes the result Null (falsy, and `!` of it true). Otherwise: a Date or Duration left side reads
+ * a string right side as one of its kind, both sides become milliseconds, numbers or strings, and
+ * are compared with plain JS `<` (so `"" < date(...)` is `"" < <ms>`, true, as in Obsidian).
+ * The library's compiled filters and expressions all evaluate through `Evaluator`, so overriding it
+ * here covers filters, formulas, sorts and columns.
+ */
+type Value = RuntimeValue;
+type Scope = Record<string, Value>;
+interface EvaluatorInternals {
+  eval(expr: unknown, scope?: Scope): Value;
+  evalBinary(op: string, left: unknown, right: unknown, scope: Scope): Value;
+}
+const ORDERING = new Set(['<', '>', '<=', '>=']);
+const proto = Evaluator.prototype as unknown as EvaluatorInternals;
+const libraryEvalBinary = proto.evalBinary;
+proto.evalBinary = function (op, leftExpr, rightExpr, scope) {
+  if (!ORDERING.has(op)) return libraryEvalBinary.call(this, op, leftExpr, rightExpr, scope);
+  const left = this.eval(leftExpr, scope);
+  let right = this.eval(rightExpr, scope);
+  if (left.type === 'Error') return left;
+  if (right.type === 'Error') return right;
+  if (left.type === 'Null' || right.type === 'Null') return nullValue();
+  let a: number | string;
+  if (left.type === 'Date') {
+    a = left.value.getTime();
+    if (right.type === 'String') {
+      const d = dateValue(right.value) as Extract<Value, { type: 'Date' }>;
+      if (!Number.isNaN(d.value.getTime())) right = d;
+    }
+  } else if (left.type === 'Duration') {
+    a = durationToMilliseconds(left.value);
+    if (right.type === 'String') {
+      const d = parseDuration(right.value);
+      if (d) right = { type: 'Duration', value: d };
+    }
+  } else a = left.type === 'Number' ? left.value : stringifyValue(left);
+  const b =
+    right.type === 'Date'
+      ? right.value.getTime()
+      : right.type === 'Duration'
+        ? durationToMilliseconds(right.value)
+        : right.type === 'Number'
+          ? right.value
+          : stringifyValue(right);
+  return boolValue(op === '<' ? a < b : op === '>' ? a > b : op === '<=' ? a <= b : a >= b);
+};
 
 export interface SortSpec {
   property: string;
