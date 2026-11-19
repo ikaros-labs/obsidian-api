@@ -73,7 +73,7 @@ export function checkOrdered(conds: Condition[], frontmatters: Record<string, un
     if (values.some(numeric ? isNum : isDate)) continue;
     // Name the kind it lacks when it has the other kind, else say it has neither.
     const lacks = values.some(numeric ? isDate : isNum) ? (numeric ? 'number' : 'date') : 'number or date';
-    throw invalidRequest(`${c.key} has no ${lacks} values in the listed notes; use = for text`, { where: c.source });
+    throw invalidRequest(`${c.key} has no ${lacks} values in the listed notes; use = for text`);
   }
 }
 
