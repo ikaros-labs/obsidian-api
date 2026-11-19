@@ -33,6 +33,9 @@ import type { Entry, VaultIndex } from '../vault-index.js';
  * makes the result Null (falsy, and `!` of it true). Otherwise: a Date or Duration left side reads
  * a string right side as one of its kind, both sides become milliseconds, numbers or strings, and
  * are compared with plain JS `<` (so `"" < date(...)` is `"" < <ms>`, true, as in Obsidian).
+ * `==` and `!=` between two primitives (String, Number, Boolean) are JS loose equality, as in
+ * Obsidian's `looseEquals` (`Score == "3"`, `true == 1`, `"" == 0`); every other pair, null
+ * included, is left to the library, which agrees with Obsidian there.
  * The library's compiled filters and expressions all evaluate through `Evaluator`, so overriding it
  * here covers filters, formulas, sorts and columns.
  */
@@ -41,16 +44,27 @@ type Scope = Record<string, Value>;
 interface EvaluatorInternals {
   eval(expr: unknown, scope?: Scope): Value;
   evalBinary(op: string, left: unknown, right: unknown, scope: Scope): Value;
+  equals(left: Value, right: Value): boolean;
 }
 const ORDERING = new Set(['<', '>', '<=', '>=']);
+const PRIMITIVE = new Set(['String', 'Number', 'Boolean']);
 const proto = Evaluator.prototype as unknown as EvaluatorInternals;
 const libraryEvalBinary = proto.evalBinary;
 proto.evalBinary = function (op, leftExpr, rightExpr, scope) {
-  if (!ORDERING.has(op)) return libraryEvalBinary.call(this, op, leftExpr, rightExpr, scope);
+  const equality = op === '==' || op === '!=';
+  if (!equality && !ORDERING.has(op)) return libraryEvalBinary.call(this, op, leftExpr, rightExpr, scope);
   const left = this.eval(leftExpr, scope);
   let right = this.eval(rightExpr, scope);
   if (left.type === 'Error') return left;
   if (right.type === 'Error') return right;
+  if (equality) {
+    const eq =
+      PRIMITIVE.has(left.type) && PRIMITIVE.has(right.type)
+        ? // eslint-disable-next-line eqeqeq
+          (left.value as unknown) == (right.value as unknown)
+        : this.equals(left, right);
+    return boolValue(op === '==' ? eq : !eq);
+  }
   if (left.type === 'Null' || right.type === 'Null') return nullValue();
   let a: number | string;
   if (left.type === 'Date') {

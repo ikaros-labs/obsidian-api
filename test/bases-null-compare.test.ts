@@ -86,9 +86,22 @@ describe('ordering comparisons with empty values (as in Obsidian)', () => {
     expect(base.results.map((r) => r.values)).toEqual([{ 'file.name': 'Early', 'formula.band': 'lo', 'formula.lt': true }]);
   });
 
-  it('a string right of a date is read as a date; ==/!= are unchanged', async () => {
-    const run = async (filters: string) => names(await query('/v1/query', { from: ['Cmp'], select: ['file.name'], filters, sort: SORT }));
+  const run = async (filters: string) => names(await query('/v1/query', { from: ['Cmp'], select: ['file.name'], filters, sort: SORT }));
+
+  it('a string right of a date is read as a date', async () => {
     expect(await run('Completed < "2026-01-01"')).toEqual(['Blank', 'Early']);
+  });
+
+  // Obsidian's looseEquals: primitives (String, Number, Boolean) compare with JS `==`; null equals
+  // only null.
+  it('==/!= between primitives are JS loose equality; null equals only null', async () => {
+    expect(await run('Score == "3"')).toEqual(['Early']);
+    expect(await run('Score != "3"')).toEqual(['Blank', 'Late', 'Missing', 'Null']);
     expect(await run('Score != 3')).toEqual(['Blank', 'Late', 'Missing', 'Null']);
+    expect(await run('Completed == null')).toEqual(['Missing', 'Null']); // "" == null is false
+    expect(await run('Completed != null')).toEqual(['Blank', 'Early', 'Late']);
+    expect(await run('"" == null')).toEqual([]);
+    expect(await run('null == null')).toHaveLength(5);
+    expect(await run('true == 1 && "" == 0')).toHaveLength(5);
   });
 });
