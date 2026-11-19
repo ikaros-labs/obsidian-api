@@ -148,7 +148,12 @@ export async function moveFile(ctx: Ctx, segs: string[], body: unknown, kind: Ki
   const b = parse(MoveBody, body);
   const { vault } = ctx.s;
   let dest = ctx.toVault(parsePlainPath(b.destination));
-  if (kind.note) dest = withMdExtension(dest);
+  // "Folder/" or an existing folder the account can see: move into it, keeping the file name.
+  const intoFolder =
+    /\/\s*$/.test(b.destination) ||
+    (dest.length > ctx.account.root.length && ctx.perms(dest).size > 0 && (await vault.kindOf(await vault.resolve(dest))) === 'folder');
+  if (intoFolder) dest = [...dest, segs.at(-1)!];
+  else if (kind.note) dest = withMdExtension(dest);
   if (dest.length === ctx.account.root.length) throw new ApiError(400, 'invalid_path', 'A destination file path is required');
 
   return vault.locks.run([join(segs), join(dest)], async () => {

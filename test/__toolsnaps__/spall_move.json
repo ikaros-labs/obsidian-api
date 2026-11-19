@@ -13,7 +13,7 @@
       "destination": {
         "type": "string",
         "minLength": 1,
-        "description": "New note path relative to your root"
+        "description": "New note path, or a folder (ending in / or existing) to move into keeping the name"
       },
       "on_conflict": {
         "default": "fail",

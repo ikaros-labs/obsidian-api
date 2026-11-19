@@ -371,7 +371,7 @@ const move = tool({
   description: 'Moves or renames a note. Needs update+delete on the source and create on the destination. Links in other notes are not rewritten.',
   input: z.object({
     path,
-    destination: z.string().min(1).describe('New note path relative to your root'),
+    destination: z.string().min(1).describe('New note path, or a folder (ending in / or existing) to move into keeping the name'),
     on_conflict: z.enum(['fail', 'rename']).default('fail'),
   }),
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },

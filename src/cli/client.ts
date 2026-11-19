@@ -21,7 +21,7 @@ export const CLIENT_USAGE = `Client commands (need SPALL_TOKEN in the environmen
       --set key=value  --unset key  --append  --append-to "A > B"  --prepend-to H
       --replace-section H  (these take --content text|-)  --replace OLD --with NEW
       --ops file.json|-  (a JSON array of spall_edit ops)
-  mv <path> <destination> [--rename]
+  mv <path> <destination> [--rename]   A destination ending in / or an existing folder: move into it
   trash <path> [--rev R]
   base <file.base> [--view V] [--limit N] [--cursor C]
   mcp [--read-only] [--tools a,b]       MCP server over stdio
