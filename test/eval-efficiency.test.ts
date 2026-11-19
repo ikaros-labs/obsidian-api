@@ -210,6 +210,29 @@ describe('item 6: search', () => {
   });
 });
 
+describe('related ignores folder names', () => {
+  it('neither picks nor scores terms that only come from folder names', async () => {
+    const env2 = await setup({
+      accounts: { probe: { root: 'Corpus', access: { '.': 'read' } } },
+      prepare: (v) => {
+        mkdirSync(path.join(v, 'Corpus/Quantum'), { recursive: true });
+        writeFileSync(path.join(v, 'Corpus/Source.md'), 'quantum quantum quantum\n');
+        writeFileSync(path.join(v, 'Corpus/Quantum/Cooking.md'), 'bread baking\n');
+        writeFileSync(path.join(v, 'Corpus/Quantum/Physics.md'), 'quantum physics\n');
+      },
+    });
+    try {
+      const r = await env2.req('probe', { method: 'GET', url: '/v1/related?path=Source.md' });
+      expect(r.json().results.map((h: { path: string; matched: string[] }) => [h.path, h.matched])).toEqual([['Quantum/Physics.md', ['quantum']]]);
+      // Ordinary search still matches folder names.
+      const s = await env2.req('probe', { method: 'GET', url: '/v1/search?q=quantum' });
+      expect(s.json().results.map((h: { path: string }) => h.path).sort()).toEqual(['Quantum/Cooking.md', 'Quantum/Physics.md', 'Source.md']);
+    } finally {
+      await env2.cleanup();
+    }
+  });
+});
+
 describe('item 7: paging', () => {
   it('has no next_cursor when everything was returned, and totals count every entry', async () => {
     const all = await get('pm', `/v1/folders/${enc('1. Projects')}?depth=all&limit=8`);
@@ -232,6 +255,19 @@ describe('item 7: paging', () => {
     expect(bad.body.error.details).toEqual({ changed: ['depth', 'sort'] });
     const s1 = (await get('pm', '/v1/search?q=hardware&limit=1')).body;
     expect((await get('pm', `/v1/search?q=hardware&match=any&cursor=${s1.next_cursor}`)).body.error.message).toContain('match changed');
+  });
+
+  it('rejects malformed cursors of any JSON shape with 400, never 500', async () => {
+    const b64 = (v: string) => Buffer.from(v).toString('base64url');
+    const shapes = ['null', '3', '"x"', '[1]', 'true', '{}', '{"o":-1,"k":"a"}', '{"o":0,"k":1}', '{"o":0,"k":"a","p":null}', '{"o":0,"k":"a","p":[1]}', '{"o":0,"k":"a","p":{"x":1}}'];
+    for (const cur of [...shapes.map(b64), 'not-base64!', 'bnVsbA']) {
+      for (const url of [`/v1/folders?cursor=${cur}`, `/v1/search?q=hardware&cursor=${cur}`]) {
+        const r = await get('pm', url);
+        expect([url, r.status, r.body.error?.code]).toEqual([url, 400, 'invalid_request']);
+      }
+      const q = await env.req('pm', { method: 'POST', url: '/v1/query', payload: { from: ['1. Projects'], cursor: cur } });
+      expect([cur, q.statusCode]).toEqual([cur, 400]);
+    }
   });
 
   it('prints totals and where the next page is in the CLI', async () => {

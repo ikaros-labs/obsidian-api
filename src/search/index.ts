@@ -21,8 +21,9 @@ interface Doc {
   /** Body without frontmatter, kept for snippets. */
   body: string;
   frontmatter: Record<string, unknown> | null;
-  /** Terms that only come from folder names: no signal for "related". */
-  folderOnly: Set<string>;
+  /** `tf` and `len` without folder names, which say nothing about how similar notes are ("related"). */
+  content: Map<string, number>;
+  contentLen: number;
 }
 
 /**
@@ -44,6 +45,9 @@ interface Stats {
   avgLen: number;
   /** Document frequencies, filled in lazily per term. */
   df: Map<string, number>;
+  /** The same without folder names, for "related". */
+  avgContentLen: number;
+  contentDf: Map<string, number>;
 }
 
 const MAX_SCOPES_PER_KEY = 32;
@@ -151,22 +155,22 @@ export class SearchIndex {
       ['body', body],
     ];
     let len = 0;
-    const folderTerms = new Set<string>();
-    const otherTerms = new Set<string>();
+    const content = new Map<string, number>();
+    let contentLen = 0;
     for (const [field, value] of fields) {
       const w = FIELD_WEIGHTS[field];
       if (seq.length > 0) seq.push('');
       for (const t of tokenize(value)) {
-        (field === 'folders' ? folderTerms : otherTerms).add(t);
         tf.set(t, (tf.get(t) ?? 0) + w);
         len += w;
         seq.push(t);
+        if (field === 'folders') continue;
+        content.set(t, (content.get(t) ?? 0) + w);
+        contentLen += w;
       }
     }
-    this.docs.set(e.path, { path: e.path, rev: e.rev ?? '', tf, len, seq, body,
-      frontmatter: e.meta?.frontmatter ?? null,
-      folderOnly: new Set([...folderTerms].filter((t) => !otherTerms.has(t))),
-    });
+    const frontmatter = e.meta?.frontmatter ?? null;
+    this.docs.set(e.path, { path: e.path, rev: e.rev ?? '', tf, len, seq, body, frontmatter, content, contentLen });
     this.vocab = null;
     for (const t of tf.keys()) {
       let set = this.postings.get(t);
@@ -206,12 +210,14 @@ export class SearchIndex {
     const prefix = scope.folder === '' ? '' : `${scope.folder}/`;
     const pool: Stats['pool'] = [];
     let totalLen = 0;
+    let totalContentLen = 0;
     for (const doc of this.docs.values()) {
       if (!doc.path.startsWith(prefix)) continue;
       const e = this.index.get(doc.path);
       if (!e || !scope.visible(e)) continue;
       pool.push({ e, doc });
       totalLen += doc.len;
+      totalContentLen += doc.contentLen;
     }
     const stats: Stats = {
       version: this.syncedVersion,
@@ -219,6 +225,8 @@ export class SearchIndex {
       paths: new Set(pool.map((x) => x.doc.path)),
       avgLen: pool.length ? totalLen / pool.length || 1 : 1,
       df: new Map(),
+      avgContentLen: pool.length ? totalContentLen / pool.length || 1 : 1,
+      contentDf: new Map(),
     };
     // Drop stale entries; cap the number of folders cached per account.
     for (const [k, v] of byFolder) if (v.version !== this.syncedVersion) byFolder.delete(k);
@@ -227,19 +235,25 @@ export class SearchIndex {
     return stats;
   }
 
-  /** Document frequency of `term` among the scope's notes (cached in `stats`). */
-  private df(stats: Stats, term: string): number {
-    let df = stats.df.get(term);
+  /**
+   * Document frequency of `term` among the scope's notes (cached in `stats`). With `content`,
+   * occurrences in folder names don't count.
+   */
+  private df(stats: Stats, term: string, content = false): number {
+    const cache = content ? stats.contentDf : stats.df;
+    let df = cache.get(term);
     if (df === undefined) {
       df = 0;
-      for (const p of this.postings.get(term) ?? []) if (stats.paths.has(p)) df++;
-      stats.df.set(term, df);
+      for (const p of this.postings.get(term) ?? []) {
+        if (stats.paths.has(p) && (!content || this.docs.get(p)!.content.has(term))) df++;
+      }
+      cache.set(term, df);
     }
     return df;
   }
 
-  private idf(stats: Stats, term: string): number {
-    const df = this.df(stats, term);
+  private idf(stats: Stats, term: string, content = false): number {
+    const df = this.df(stats, term, content);
     const n = stats.pool.length;
     return Math.log(1 + (n - df + 0.5) / (df + 0.5));
   }
@@ -250,10 +264,11 @@ export class SearchIndex {
     return this.vocab;
   }
 
-  private bm25(stats: Stats, doc: Doc, term: string, idf: number): number {
-    const f = doc.tf.get(term);
+  private bm25(stats: Stats, doc: Doc, term: string, idf: number, content = false): number {
+    const f = (content ? doc.content : doc.tf).get(term);
     if (!f) return 0;
-    return idf * ((f * (K1 + 1)) / (f + K1 * (1 - B + (B * doc.len) / stats.avgLen)));
+    const [len, avg] = content ? [doc.contentLen, stats.avgContentLen] : [doc.len, stats.avgLen];
+    return idf * ((f * (K1 + 1)) / (f + K1 * (1 - B + (B * len) / avg)));
   }
 
   /**
@@ -332,7 +347,9 @@ export class SearchIndex {
   /**
    * More like this: the notes in `scope` most similar to the note at `path`. The query is the
    * source note's `terms` most distinctive terms (weighted tf × idf over the scope, ignoring terms
-   * no other visible note has), scored with BM25 and OR. Returns null when `path` isn't indexed.
+   * no other visible note has), scored with BM25 and OR. Folder names are left out of every part of
+   * it (terms, frequencies, lengths): sharing a folder doesn't make notes similar. Returns null when
+   * `path` isn't indexed.
    */
   async related(path: string, scope: Scope, opts: { terms?: number } = {}): Promise<{ terms: string[]; hits: Hit[] } | null> {
     await this.sync();
@@ -341,10 +358,10 @@ export class SearchIndex {
     const stats = this.statsFor(scope);
     const inScope = stats.paths.has(path) ? 1 : 0;
     const candidates: { t: string; w: number; idf: number }[] = [];
-    for (const [t, f] of source.tf) {
-      if (!goodMltTerm(t) || source.folderOnly.has(t)) continue; // Numbers, dates, URL parts and 2-letter words are poor signals.
-      const idf = this.idf(stats, t);
-      if (stats.df.get(t)! - inScope < 1) continue; // Nobody else has it.
+    for (const [t, f] of source.content) {
+      if (!goodMltTerm(t)) continue; // Numbers, dates, URL parts and 2-letter words are poor signals.
+      const idf = this.idf(stats, t, true);
+      if (stats.contentDf.get(t)! - inScope < 1) continue; // Nobody else has it.
       candidates.push({ t, w: f * idf, idf });
     }
     candidates.sort((a, b) => b.w - a.w || (a.t < b.t ? -1 : 1));
@@ -355,7 +372,7 @@ export class SearchIndex {
       let score = 0;
       const matched: string[] = [];
       for (const { t, idf } of top) {
-        const s = this.bm25(stats, doc, t, idf);
+        const s = this.bm25(stats, doc, t, idf, true);
         if (s === 0) continue;
         score += s;
         matched.push(t);

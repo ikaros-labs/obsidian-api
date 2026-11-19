@@ -46,18 +46,22 @@ export const encodeCursor = (offset: number, key: CursorKey) =>
   Buffer.from(JSON.stringify({ o: offset, k: key.scope, p: key.params })).toString('base64url');
 
 export function decodeCursor(cursor: string, key: CursorKey): number {
-  let c: { o?: unknown; k?: unknown; p?: Record<string, string> } = {};
+  let parsed: unknown = null;
   try {
-    c = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+    parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
   } catch {
-    // fall through
+    // not JSON: rejected below
   }
+  // Any JSON value can come back (null, a number, an array…): check the whole shape before use.
+  const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
+  const c = isObj(parsed) ? parsed : {};
   const offset = c.o;
-  if (typeof offset !== 'number' || !Number.isInteger(offset) || offset < 0 || typeof c.k !== 'string') {
+  const paramsOk = c.p === undefined || (isObj(c.p) && Object.values(c.p).every((v) => typeof v === 'string'));
+  if (typeof offset !== 'number' || !Number.isInteger(offset) || offset < 0 || typeof c.k !== 'string' || !paramsOk) {
     throw invalidRequest('Invalid cursor: pass next_cursor exactly as returned, or drop it to start over');
   }
   if (c.k !== key.scope) throw invalidRequest('Invalid cursor: it belongs to another folder, path or query. Drop it to start over');
-  const old = c.p ?? {};
+  const old = (c.p ?? {}) as Record<string, string>;
   const changed = [...new Set([...Object.keys(old), ...Object.keys(key.params)])].filter((k) => old[k] !== key.params[k]).sort();
   if (changed.length > 0) {
     throw invalidRequest(`Invalid cursor: ${changed.join(', ')} changed since it was made. Use the same values, or drop the cursor to start over`, {
