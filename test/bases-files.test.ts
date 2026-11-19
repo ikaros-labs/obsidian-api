@@ -48,6 +48,9 @@ beforeAll(async () => {
       mkdirSync(path.join(vault, 'Notes/Private'), { recursive: true });
       writeFileSync(path.join(vault, 'Notes/Private/Hidden.base'), BASE);
       writeFileSync(path.join(vault, 'Notes/.hidden.base'), BASE);
+      mkdirSync(path.join(vault, 'Research/Topic'));
+      writeFileSync(path.join(vault, 'Research/Topic/Topic.md'), 'folder note\n');
+      writeFileSync(path.join(vault, 'Research/Linker.md'), 'See [[Topic]].\n');
     },
   });
   agent = await mcpClient(env, 'agent');
@@ -154,6 +157,9 @@ describe('MCP: .base files', () => {
     const r = await callTool(agent, 'spall_read', { path: 'Research/Plan', view: 'backlinks' });
     expect(r.data).toMatchObject({ path: 'Research/Plan.md', backlinks: ['Notes/Ideas.md'] });
     expect(JSON.stringify(r.data)).not.toContain('Private');
+    // R05: [[Topic]] resolves to the folder note Topic/Topic.md, not to the folder Topic
+    const folderNote = await callTool(agent, 'spall_read', { path: 'Research/Topic/Topic', view: 'backlinks' });
+    expect(folderNote.data).toMatchObject({ backlinks: ['Research/Linker.md'] });
   });
 });
 
