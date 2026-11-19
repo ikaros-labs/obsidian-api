@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { Client } from '@modelcontextprotocol/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { clientMain } from '../src/cli/client.js';
-import { ACCOUNTS, enc, setup, type TestEnv } from './helpers.js';
+import { ACCOUNTS, enc, setup, unfenced, type TestEnv } from './helpers.js';
 import { callTool, injectFetch, mcpClient } from './mcp-helpers.js';
 
 const BASE = `filters:
@@ -41,7 +41,7 @@ const file = (rel: string) => readFileSync(path.join(env.vault, rel), 'utf8');
 
 beforeAll(async () => {
   env = await setup({
-    accounts: { ...ACCOUNTS, agent: { ...ACCOUNTS.agent, rate_limit: '10000/min' } },
+    accounts: unfenced({ ...ACCOUNTS, agent: { ...ACCOUNTS.agent, rate_limit: '10000/min' } }),
     prepare: (vault) => {
       writeFileSync(path.join(vault, 'Research/Reading.base'), BASE);
       writeFileSync(path.join(vault, 'Research/cover.png'), 'png');

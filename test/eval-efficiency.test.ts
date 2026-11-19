@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { clientMain, quotePath } from '../src/cli/client.js';
 import { snippetOf } from '../src/search/index.js';
 import { tokenize } from '../src/search/tokenize.js';
-import { ACCOUNTS, enc, setup, type TestEnv } from './helpers.js';
+import { ACCOUNTS, enc, setup, unfenced, type TestEnv } from './helpers.js';
 import { callTool, injectFetch, mcpClient } from './mcp-helpers.js';
 
 /** Spall 1.2 agent-efficiency items: paths, did-you-mean, where/missing, search, paging, tree. */
@@ -19,11 +19,11 @@ const PROJECTS: Record<string, string> = {
 let env: TestEnv;
 beforeAll(async () => {
   env = await setup({
-    accounts: {
+    accounts: unfenced({
       ...ACCOUNTS,
       agent: { ...ACCOUNTS.agent, rate_limit: '10000/min' },
       pm: { rate_limit: '10000/min', access: { '1. Projects': 'read', 'Research/inbox': 'read', 'Notes/Private': 'none', Notes: 'read' } },
-    },
+    }),
     prepare: (vault) => {
       mkdirSync(path.join(vault, '1. Projects/Archive/2025'), { recursive: true });
       for (const [name, fm] of Object.entries(PROJECTS)) {

@@ -688,12 +688,12 @@ A tool is shown when **one** grant includes every permission it needs. Then each
 `read_only` drops every tool without `readOnlyHint`. The tool list is computed per request, so config reloads apply immediately. `/v1/me` reports the resulting tool list (`mcp.tools`), so `spall mcp` (stdio) starts from the same list and its flags narrow it further; it fences note text when `mcp.fenced` is true.
 
 ### Results and errors
-- `structuredContent` and the text content come from one object. `structuredContent` always carries the raw values; the text content is what fencing changes.
+- `structuredContent` and the text content come from one object. With fencing on, a result is text only, with no `structuredContent`: clients such as Claude Code show the model `structuredContent` instead of the text when both are present, and it can't be fenced. With fencing off, `structuredContent` carries the raw values and the text is their JSON. No tool declares an `outputSchema`.
 - Note-derived text is wrapped in `<untrusted-content source="spall" path="…">` markers. A closing marker inside the note is escaped (`<\/untrusted-content`, which is still the same JSON string). The server `instructions` tell the model not to follow instructions inside the markers. This is `mcp.fence_untrusted`, on by default and overridable per account; off, the text is the plain JSON of the result.
   - `spall_read` markdown and section views: the body, with `rev` in the attrs.
-  - `spall_search` (`snippet`, `heading`), `spall_list` with `frontmatter`, `spall_query_base` (row `values`, `group`, `groups`), `spall_read` views frontmatter (`frontmatter`, `tags`), outline (`headings`) and backlinks (`links`): the text is one JSON line for the result's plain fields, then per item one JSON line of its plain fields (path, name, score, rev, dates) followed by one fence holding the item's note fields as JSON. One fence per note keeps the note's path next to its text without repeating markers per field. A result with no note text (a list without frontmatter) stays plain JSON.
+  - `spall_search` (`snippet`, `heading`), `spall_list` with `frontmatter`, `spall_query_base` (row `values`, `group`, `groups`), `spall_read` views frontmatter (`frontmatter`, `tags`), outline (`headings`) and backlinks (`links`), `spall_list view=tags` (`results`, in one fence without a path): the text is one JSON line for the result's plain fields (left out when there are none), then per item one JSON line of its plain fields (path, name, score, rev, dates) followed by one fence holding the item's note fields as JSON. One fence per note keeps the note's path next to its text without repeating markers per field. A result with no note text (a list without frontmatter) stays plain JSON.
   - Paths, counts, revs and other metadata are never fenced. The CLI doesn't fence.
-- REST errors become `isError: true` results with the REST `code`, a hint, and `structuredContent.error`:
+- REST errors become `isError: true` results with the REST `code`, a hint and the details in the text (and `structuredContent.error` with fencing off):
 
 | Code | Tool error |
 |---|---|

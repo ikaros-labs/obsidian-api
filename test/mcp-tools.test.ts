@@ -7,7 +7,7 @@ import { fetchCaller, injectCaller } from '../src/mcp/caller.js';
 import { ToolError } from '../src/mcp/errors.js';
 import { runTool, TOOL_NAMES, visibleTools } from '../src/mcp/tools.js';
 import { fence, truncateLines } from '../src/mcp/format.js';
-import { ACCOUNTS, setup, type TestEnv } from './helpers.js';
+import { ACCOUNTS, setup, unfenced, type TestEnv } from './helpers.js';
 import { callTool, injectFetch, mcpClient } from './mcp-helpers.js';
 
 const EDGE = `---
@@ -65,7 +65,7 @@ const write = (rel: string, text: string) => {
 
 beforeAll(async () => {
   env = await setup({
-    accounts: { ...ACCOUNTS, agent: { ...ACCOUNTS.agent, rate_limit: '10000/min' } },
+    accounts: unfenced({ ...ACCOUNTS, agent: { ...ACCOUNTS.agent, rate_limit: '10000/min' } }),
     prepare: (vault) => writeFileSync(path.join(vault, 'Research/Edge.md'), EDGE),
   });
   agent = await mcpClient(env, 'agent');
@@ -185,11 +185,10 @@ describe('tools', () => {
     expect((tags.data.results as { tag: string }[]).map((t) => t.tag)).toContain('research');
   });
 
-  it('spall_read views: markdown (fenced), outline, frontmatter, section', async () => {
+  it('spall_read views: markdown, outline, frontmatter, section', async () => {
     const md = await callTool(agent, 'spall_read', { path: 'Research/Plan' });
     expect(md.data.rev).toMatch(/^sha256:/);
-    expect(md.text).toContain(`<untrusted-content source="spall" path="Research/Plan.md" rev="${md.data.rev}">\n---\nproject: spall`);
-    expect(md.text.trimEnd().endsWith('</untrusted-content>')).toBe(true);
+    expect(md.text).toContain(`path: Research/Plan.md\nrev: ${md.data.rev}\n---\nproject: spall`);
 
     const outline = await callTool(agent, 'spall_read', { path: 'Research/Plan.md', view: 'outline' });
     expect(outline.data).toMatchObject({ path: 'Research/Plan.md', rev: md.data.rev });

@@ -25,7 +25,14 @@ export const ACCOUNTS = {
 } as const;
 
 export type AccountName = keyof typeof ACCOUNTS;
-type AccountSpec = { root?: string; rate_limit?: string; access: Record<string, unknown>; expires?: string };
+type AccountSpec = { root?: string; rate_limit?: string; access: Record<string, unknown>; expires?: string; mcp?: Record<string, unknown> };
+
+/**
+ * `accounts` with MCP fencing off, so tool results carry structuredContent (fenced results are
+ * text only). For tests that check a tool's data rather than what the model sees.
+ */
+export const unfenced = (accounts: Record<string, AccountSpec>): Record<string, AccountSpec> =>
+  Object.fromEntries(Object.entries(accounts).map(([n, a]) => [n, { ...a, mcp: { ...a.mcp, fence_untrusted: false } }]));
 
 export interface TestEnv {
   dir: string;
