@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.2.2 — unreleased
+## 1.2.2 — 2026-11-19
 
 - **Fix: empty dates in bases are empty, not 1970-01-01.** A date property (typed in `.obsidian/types.json` or by config) that is `Key:` (null) showed as `1970-01-01T00:00:00.000Z` in `POST /v1/bases/{path}/query`, `/v1/query`, `spall_query_base` and `spall base`, and formulas saw it as a 1970 date. `""` and a missing value became an invalid date. All three are now empty values: `null` (or `""` as written) in JSON, blank in CLI tables, `isEmpty()` is true, and they sort after real dates in either direction.
 
