@@ -1,7 +1,7 @@
 {
   "name": "spall_whoami",
   "title": "Who am I",
-  "description": "Your account: root folder, grants per folder (read/create/update/delete) and rate limit. Call it when unsure what you can access.",
+  "description": "Your account: root folder, what you can do per folder (read/create/update/delete; folders not listed don't exist for you), rate limit, and the MCP tools you have. Call it when unsure what you can access.",
   "inputSchema": {
     "type": "object",
     "properties": {},

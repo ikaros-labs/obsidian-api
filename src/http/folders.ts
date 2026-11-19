@@ -8,7 +8,7 @@ import { entryName, type Entry, type Kind } from '../vault-index.js';
 import { Ctx, iso, parse, project, type Services } from './context.js';
 import { doc } from './openapi.js';
 import { cursorKey, page as pageOf, sample } from './paging.js';
-import { checkKeys, checkOrdered, matches, parseWhere } from './where.js';
+import { checkKeys, checkOrdered, isEmpty, matches, parseWhere } from './where.js';
 
 const PREFIX = '/v1/folders/';
 
@@ -33,7 +33,7 @@ const ListQuery = z.object({
   include: z.string().optional(),
   fields: z.string().optional(),
   where: many.describe('Notes whose frontmatter matches, e.g. Status=Done, Score>=4, Due<2026-12-01 (repeatable, ANDed)'),
-  missing: many.describe('Notes without this frontmatter property (repeatable)'),
+  missing: many.describe('Notes where this frontmatter property is absent or empty (null, blank or []); repeatable'),
 });
 
 const TreeQuery = z.object({
@@ -168,7 +168,7 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
       checkOrdered(conds, notes.map((i) => i.e.meta?.frontmatter ?? {}));
       matching = notes.filter((i) => {
         const fm = i.e.meta?.frontmatter ?? {};
-        return conds.every((c) => matches(fm, c)) && q.missing.every((k) => !Object.hasOwn(fm, k));
+        return conds.every((c) => matches(fm, c)) && q.missing.every((k) => isEmpty(fm, k));
       });
     }
     let page: Item[];

@@ -44,6 +44,39 @@ export function fence(content: string, attrs: Record<string, string>): string {
   return `<untrusted-content source="spall"${a}>\n${safe}${safe.endsWith('\n') || safe === '' ? '' : '\n'}</untrusted-content>`;
 }
 
+type Obj = Record<string, unknown>;
+
+/** Splits `o` into the fields named in `keys` (note text) and the rest (paths, counts, revs, …). */
+function split(o: Obj, keys: readonly string[]): [Obj, Obj] {
+  const plain: Obj = {};
+  const note: Obj = {};
+  for (const [k, v] of Object.entries(o)) (keys.includes(k) ? note : plain)[k] = v;
+  return [plain, note];
+}
+
+/**
+ * The text of a result that carries note text: the fields named in `noteKeys` (at the top, and in
+ * each of `results`) go as JSON inside one fence per note, path in its attrs; everything else stays
+ * plain JSON, one line for the result and one per item. Undefined when there is no note text, so
+ * the caller keeps the plain JSON.
+ */
+export function fencedText(data: Obj, noteKeys: { top?: readonly string[]; item?: readonly string[] }): string | undefined {
+  const { results, ...rest } = data;
+  const items = noteKeys.item && Array.isArray(results) ? (results as Obj[]) : null;
+  const out: string[] = [];
+  let fenced = false;
+  const add = (o: Obj, keys: readonly string[]) => {
+    const [plain, note] = split(o, keys);
+    out.push(JSON.stringify(plain));
+    if (Object.keys(note).length === 0) return;
+    fenced = true;
+    out.push(fence(JSON.stringify(note), typeof o.path === 'string' ? { path: o.path } : {}));
+  };
+  add(items ? rest : data, noteKeys.top ?? []);
+  for (const r of items ?? []) add(r, noteKeys.item!);
+  return fenced ? `${out.join('\n')}\n` : undefined;
+}
+
 export interface TreeData {
   path: string;
   notes: number;

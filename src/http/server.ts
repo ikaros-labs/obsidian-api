@@ -9,6 +9,7 @@ import { Ctx, sendError, type Services } from './context.js';
 import { fileRoutes } from './files.js';
 import { folderRoutes } from './folders.js';
 import { mcpRoutes } from './mcp.js';
+import { visibleTools } from '../mcp/tools.js';
 import { noteRoutes } from './notes.js';
 import { doc, registerOpenApi, version } from './openapi.js';
 import { searchRoutes } from './search.js';
@@ -130,17 +131,20 @@ function routes(app: FastifyInstance, s: Services) {
 
   app.get('/openapi.json', { schema: doc({ summary: 'This OpenAPI document', tag: 'System', public: true }) }, async () => app.swagger());
 
-  app.get('/v1/me', { schema: doc({ summary: 'The calling account, its root, grants and token', tag: 'System' }) }, async (req) => {
+  app.get('/v1/me', { schema: doc({ summary: 'The calling account: root, effective grants, token and the MCP tools it sees', tag: 'System' }) }, async (req) => {
     const ctx = new Ctx(req, s);
     const a = ctx.account;
+    const enabled = s.config().mcp.enabled;
     return {
       account: a.name,
       description: a.description ?? null,
       root: a.rootPath,
-      access: a.grants,
+      // Hidden folders (no permissions) are left out: they look the same as missing ones.
+      access: a.grants.filter((g) => g.permissions.length > 0),
       rate_limit: a.rateLimit.spec,
       token: { name: ctx.token.name, expires: ctx.token.expires ?? null },
-      mcp: { enabled: s.config().mcp.enabled, ...a.mcp },
+      // The MCP tools this account sees on /mcp (none when MCP is off on the server).
+      mcp: { enabled, tools: enabled ? visibleTools(a.grants, a.mcp).map((t) => t.name) : [] },
     };
   });
 

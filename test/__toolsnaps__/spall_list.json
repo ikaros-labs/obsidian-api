@@ -43,7 +43,7 @@
         }
       },
       "missing": {
-        "description": "Notes without these properties",
+        "description": "Notes where these properties are absent or empty (Key:, \"\", [])",
         "type": "array",
         "items": {
           "type": "string"

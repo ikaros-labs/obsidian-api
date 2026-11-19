@@ -156,7 +156,8 @@ describe('visibility per account', () => {
 describe('tools', () => {
   it('spall_whoami returns the grants', async () => {
     const r = await callTool(agent, 'spall_whoami');
-    expect(r.data).toMatchObject({ account: 'agent', access: expect.arrayContaining([{ path: 'Notes/Private', permissions: [] }]) });
+    expect(r.data).toMatchObject({ account: 'agent', access: expect.arrayContaining([{ path: 'Notes', permissions: ['read'] }]) });
+    expect((r.data.access as { path: string }[]).some((g) => g.path === 'Notes/Private')).toBe(false);
   });
 
   it('spall_search returns hits without bodies, and needs exactly one of query/related_to', async () => {
