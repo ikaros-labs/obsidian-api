@@ -126,7 +126,7 @@ Applies a list of operations **atomically**: either all of them succeed or none 
 - **Content** is written exactly as given. Heading levels are never adjusted.
 - **`replace_text`** fails if the string isn't found, or if it's found more times than `count` allows.
 - **`frontmatter.merge`** concatenates lists, merges objects, and replaces anything else.
-- **Frontmatter ops touch only their key.** Every other byte of the frontmatter stays as written (flow lists like `[ai]`, quotes, comments, spacing, key order). A changed scalar keeps its quote style and a changed flow list stays flow. A new key is added at the end. Only a frontmatter that is not a plain block mapping (e.g. `{a: 1}`) is re-serialized.
+- **Frontmatter ops touch only their key.** Every other byte of the frontmatter stays as written (flow lists like `[ai]`, quotes, comments, spacing, key order). A changed scalar keeps its quote style and a changed flow list stays flow. A new key is added at the end. The fence lines (CRLF, a `...` closing fence) are kept as well. Only a frontmatter that is not a plain block mapping (e.g. `{a: 1}`) is re-serialized. Before anything is written, the result must parse (aliases included) to exactly the old data with the requested change; otherwise the op fails and the file is unchanged. Changing or removing a value that defines a YAML anchor used by an alias elsewhere returns 400 `invalid_request` (edit it with `replace_text`).
 - **The blank line(s) after the frontmatter are kept** by whole-body ops; appending to an empty body adds one.
 - **Response:** the new `rev` plus the Note minus `body`. Add `?return=full` to include the body.
 
@@ -144,7 +144,7 @@ Applies a list of operations **atomically**: either all of them succeed or none 
 - Links pointing to the note are **not** rewritten.
 
 #### Not a note
-A path under `/v1/notes/` that names a visible non-note file (`Reading List.base`, `cover.png`) and has no `….md` twin returns 400 `not_a_note`, with `details.kind` (`base` or `file`) and `details.use` (the endpoint to use). Hidden and missing files return 404 as usual.
+A path under `/v1/notes/` that names a visible non-note file (`Reading List.base`, `cover.png`) and has no `….md` twin the account can read returns 400 `not_a_note`, with `details.kind` (`base` or `file`) and `details.use` (the endpoint to use). Hidden and missing files return 404 as usual.
 
 ### Files (attachments, and any file that isn't a note)
 

@@ -55,20 +55,26 @@ export async function noteJson(ctx: Ctx, real: string[], text: string, opts: { b
   return out;
 }
 
+/** Whether `segs` is something the account can read: the path and its resolved target. */
+async function readableExisting(ctx: Ctx, segs: string[]): Promise<'file' | 'folder' | null> {
+  if (!ctx.perms(segs).has('read')) return null;
+  try {
+    const real = await ctx.s.vault.resolve(segs);
+    return ctx.perms(real).has('read') ? await ctx.s.vault.kindOf(real) : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * `X.base` (or `X.png`, …) asked for as a note: when the account can read such a file and there is no
- * `X.base.md` note, say it is not a note instead of not_found. Hidden files stay plain 404.
+ * `X.base` (or `X.png`, …) asked for as a note: when the account can read such a file and can't read
+ * an `X.base.md` note, say it is not a note instead of not_found. The answer depends only on what the
+ * account can read: hidden files stay plain 404, and a hidden `X.base.md` changes nothing.
  */
 export async function checkNotANote(ctx: Ctx, raw: string[], note: string[]): Promise<void> {
-  if (raw === note || !/\.[^.\s]+$/.test(raw.at(-1)!) || !ctx.perms(raw).has('read')) return;
-  const { vault } = ctx.s;
-  try {
-    const real = await vault.resolve(raw);
-    if (!ctx.perms(real).has('read') || (await vault.kindOf(real)) !== 'file') return;
-    if ((await vault.kindOf(await vault.resolve(note))) !== null) return;
-  } catch {
-    return;
-  }
+  if (raw === note || !/\.[^.\s]+$/.test(raw.at(-1)!)) return;
+  if ((await readableExisting(ctx, raw)) !== 'file') return;
+  if ((await readableExisting(ctx, note)) !== null) return;
   const p = ctx.toApi(raw);
   const base = /\.base$/i.test(p);
   throw new ApiError(400, 'not_a_note', `${p} is a ${base ? 'base' : 'file'}, not a note`, {

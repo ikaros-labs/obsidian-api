@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Client } from '@modelcontextprotocol/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -193,5 +193,42 @@ describe('CLI: .base files and backlinks', () => {
     expect((await spall(['read', 'Research/Plan', '--backlinks'])).out).toBe('Notes/Ideas.md\n');
     expect((await spall(['read', 'Notes/Ideas', '--backlinks'])).out).toBe('Research/Plan.md\n');
     expect((await spall(['read', 'Research/inbox/Draft', '--backlinks'])).out).toBe('(no notes you can read link to Research/inbox/Draft.md)\n');
+  });
+});
+
+describe('not_a_note does not reveal hidden siblings', () => {
+  it('gives the same answer whether a hidden X.png.md exists or not, also behind a symlink', async () => {
+    const outcomes: string[] = [];
+    for (const sibling of ['none', 'hidden-file', 'symlink-to-hidden', 'dangling-symlink']) {
+      const e = await setup({
+        vault: { follow_symlinks: true },
+        accounts: { probe: { access: { Research: 'read', 'Research/cover.png.md': 'none', 'Notes/Private': 'none' } } },
+        prepare: (vault) => {
+          writeFileSync(path.join(vault, 'Research/cover.png'), 'image');
+          mkdirSync(path.join(vault, 'Notes/Private'), { recursive: true });
+          writeFileSync(path.join(vault, 'Notes/Private/x.md'), 'secret');
+          const link = path.join(vault, 'Research/cover.png.md');
+          if (sibling === 'hidden-file') writeFileSync(link, 'hidden');
+          if (sibling === 'symlink-to-hidden') symlinkSync(path.join(vault, 'Notes/Private/x.md'), link);
+          if (sibling === 'dangling-symlink') symlinkSync(path.join(vault, 'nowhere.md'), link);
+        },
+      });
+      try {
+        const r = await e.req('probe', { method: 'GET', url: '/v1/notes/Research/cover.png' });
+        const { request_id: _, ...err } = r.json().error;
+        outcomes.push(JSON.stringify([r.statusCode, err]));
+      } finally {
+        await e.cleanup();
+      }
+    }
+    expect(new Set(outcomes).size).toBe(1);
+    expect(outcomes[0]).toContain('not_a_note');
+  });
+
+  it('a readable X.png.md note is served as the note', async () => {
+    writeFileSync(path.join(env.vault, 'Research/pic.png'), 'image');
+    writeFileSync(path.join(env.vault, 'Research/pic.png.md'), 'about the picture\n');
+    const r = await env.req('agent', { method: 'GET', url: '/v1/notes/Research/pic.png', headers: { accept: 'text/markdown' } });
+    expect([r.statusCode, r.body]).toEqual([200, 'about the picture\n']);
   });
 });

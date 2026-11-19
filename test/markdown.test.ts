@@ -8,7 +8,7 @@ const plan = readFileSync(path.join(FIXTURE, 'Research/Plan.md'), 'utf8');
 
 describe('markdown', () => {
   it('splits frontmatter', () => {
-    expect(splitFrontmatter('---\na: 1\n---\nbody\n')).toEqual({ frontmatterRaw: 'a: 1\n', body: 'body\n', bodyLineOffset: 3 });
+    expect(splitFrontmatter('---\na: 1\n---\nbody\n')).toEqual({ frontmatterRaw: 'a: 1\n', body: 'body\n', bodyLineOffset: 3, fences: { open: '---\n', close: '---\n' } });
     expect(splitFrontmatter('---\n---\nbody')).toMatchObject({ frontmatterRaw: '', body: 'body' });
     expect(splitFrontmatter('no fm\n---\n')).toMatchObject({ frontmatterRaw: null });
     expect(splitFrontmatter('---\nunterminated\n')).toMatchObject({ frontmatterRaw: null });

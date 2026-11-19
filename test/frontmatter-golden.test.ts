@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { parseFrontmatter, splitFrontmatter } from '../src/markdown.js';
 import { applyPatch, PatchOpSchema } from '../src/patch.js';
 
 const patch = (text: string, ...raw: unknown[]) => applyPatch(text, raw.map((o) => PatchOpSchema.parse(o)));
@@ -115,5 +116,39 @@ describe('frontmatter edits preserve untouched bytes (golden)', () => {
   it('keeps the blank line after the frontmatter for prepend and whole-body replace', () => {
     expect(patch(station, { op: 'prepend', content: 'First.' })).toContain('---\n\nFirst.\nSolar');
     expect(patch(station, { op: 'replace', content: 'New body.\n' })).toMatch(/---\n\nNew body\.\n$/);
+  });
+});
+
+describe('frontmatter edits: review regressions', () => {
+  it('refuses to replace a value whose anchor other keys use, before anything changes', () => {
+    const text = '---\na: &shared old\nb: *shared\n---\nbody\n';
+    for (const op of [set('a', ['new']), set('a', 'x'), { op: 'frontmatter.unset', key: 'a' }]) {
+      expect(() => patch(text, op)).toThrow(/anchor &shared/);
+    }
+    // the alias itself, and anchors nobody uses, are fine
+    expect(patch(text, set('b', 'own'))).toBe('---\na: &shared old\nb: own\n---\nbody\n');
+    expect(patch('---\na: &lonely old\n---\n', set('a', 'new'))).toMatch(/^---\na: (&lonely )?new\n---\n$/);
+  });
+
+  it('an empty value with a comment keeps the space before the comment', () => {
+    const out = patch('---\na: # comment\nb: keep\n---\nbody\n', set('a', 'new'));
+    expect(out).toBe('---\na: new # comment\nb: keep\n---\nbody\n');
+  });
+
+  it('the written value always parses back to the requested one', () => {
+    for (const value of ['new', '# not a comment', 'a: b', '2026-11-20', 3, true, null, ['x', 'y z'], { k: [1] }, '']) {
+      for (const text of ['---\na: # c\n---\n', '---\na: old # c\n---\n', '---\na: [o]\n---\n', '---\na:\n  - o\n---\n']) {
+        const out = patch(text, set('a', value));
+        expect(parseFrontmatter(splitFrontmatter(out).frontmatterRaw)).toEqual({ a: value });
+      }
+    }
+  });
+
+  it('keeps CRLF fences and line endings, and a "..." closing fence', () => {
+    const crlf = '---\r\na: 1\r\nb: 2\r\n---\r\nbody\r\n';
+    expect(patch(crlf, set('a', 3))).toBe('---\r\na: 3\r\nb: 2\r\n---\r\nbody\r\n');
+    expect(patch(crlf, set('c', [1, 2]))).toBe('---\r\na: 1\r\nb: 2\r\nc:\r\n  - 1\r\n  - 2\r\n---\r\nbody\r\n');
+    expect(patch('---\na: 1\n...\nbody\n', set('a', 2))).toBe('---\na: 2\n...\nbody\n');
+    expect(patch('---\na: 1\n...\n', { op: 'append', content: 'x' })).toBe('---\na: 1\n...\n\nx\n');
   });
 });

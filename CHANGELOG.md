@@ -2,7 +2,7 @@
 
 ## 1.2.0 — unreleased
 
-- **Frontmatter edits keep untouched content byte-for-byte.** `frontmatter.set` / `unset` / `merge` rewrite only the targeted key: flow lists stay `[ai]` (not `[ ai ]`), and key order, quoting, comments, spacing and trailing spaces on other keys are kept. The blank line between the frontmatter and the body is kept, and appending to an empty body adds one. Long strings are no longer folded.
+- **Frontmatter edits keep untouched content byte-for-byte.** `frontmatter.set` / `unset` / `merge` rewrite only the targeted key: flow lists stay `[ai]` (not `[ ai ]`), and key order, quoting, comments, spacing and trailing spaces on other keys are kept. The blank line between the frontmatter and the body is kept, and appending to an empty body adds one. The fence lines are kept too (CRLF line endings, a `...` closing fence). Long strings are no longer folded. Every edit is checked to parse back to exactly the requested values before anything is written; changing or removing a value whose YAML anchor other keys refer to is refused with 400 (use `replace_text`).
 - **Move into a folder.** A move destination ending in `/`, or naming an existing folder the account can see, means "move into it, keeping the file name" (`POST …/move`, `spall_move`, `spall mv`). Before, `spall mv note.md "3. Resources/Electronics/"` created the file `3. Resources/Electronics.md`.
 - **`.base` files over MCP and the CLI.**
   - `spall_read` / `spall read` on a `.base` return its raw YAML; `view=outline` / `--outline` / `spall base X --views` list its views with filters, sort, columns and the default view. `GET /v1/bases/{path}` now returns `default_view`.
