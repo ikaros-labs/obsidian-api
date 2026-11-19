@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { Client } from '@modelcontextprotocol/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { clientMain } from '../src/cli/client.js';
-import { setup, type TestEnv } from './helpers.js';
+import { setup, unfenced, type TestEnv } from './helpers.js';
 import { callTool, injectFetch, mcpClient } from './mcp-helpers.js';
 
 // Four English notes and one Russian one about solder flux («флюс»): an English-only search for
@@ -13,10 +13,10 @@ let agent: Client;
 beforeAll(async () => {
   env = await setup({
     fixture: path.join(import.meta.dirname, 'fixtures/bases-vault'),
-    accounts: {
+    accounts: unfenced({
       agent: { access: { Electronics: 'read' } },
       english: { access: { Electronics: 'read', 'Electronics/Пайка.md': 'none' } },
-    },
+    }),
     prepare: (vault) => {
       mkdirSync(path.join(vault, 'Electronics'));
       for (const n of ['Resistors', 'Capacitors', 'Diodes', 'Breadboards'])

@@ -1,26 +1,29 @@
 import type { CallToolResult } from '@modelcontextprotocol/server';
 import { ToolError } from './errors.js';
 
-/** What a tool handler returns: `data` becomes structuredContent; `text` (default: data as JSON) the text content. */
+/**
+ * What a tool handler returns: `text` (default: `data` as JSON) is the text content; `data` is
+ * also structuredContent when the account doesn't fence (see toResult).
+ */
 export interface ToolOutput {
   data: Record<string, unknown>;
   text?: string;
 }
 
-export function toResult(out: ToolOutput): CallToolResult {
-  return {
-    content: [{ type: 'text', text: out.text ?? JSON.stringify(out.data) }],
-    structuredContent: out.data,
-  };
+/**
+ * The MCP result. With fencing on there is no structuredContent: clients (Claude Code among them)
+ * show the model structuredContent instead of the text when both are present, and it can't be
+ * fenced, so the text, which carries the same data, is the only copy.
+ */
+export function toResult(out: ToolOutput, opts: { fence: boolean }): CallToolResult {
+  const content: CallToolResult['content'] = [{ type: 'text', text: out.text ?? JSON.stringify(out.data) }];
+  return opts.fence ? { content } : { content, structuredContent: out.data };
 }
 
-export function errorResult(e: ToolError): CallToolResult {
+export function errorResult(e: ToolError, opts: { fence: boolean }): CallToolResult {
   const error = { code: e.code, message: e.message, ...(e.details ? { details: e.details } : {}) };
-  return {
-    isError: true,
-    content: [{ type: 'text', text: `${e.code}: ${e.message}${e.details ? `\n${JSON.stringify(e.details)}` : ''}` }],
-    structuredContent: { error },
-  };
+  const content: CallToolResult['content'] = [{ type: 'text', text: `${e.code}: ${e.message}${e.details ? `\n${JSON.stringify(e.details)}` : ''}` }];
+  return opts.fence ? { isError: true, content } : { isError: true, content, structuredContent: { error } };
 }
 
 /** Cuts `text` to at most `max` characters, at a line boundary when there is one. */
@@ -57,7 +60,7 @@ function split(o: Obj, keys: readonly string[]): [Obj, Obj] {
 /**
  * The text of a result that carries note text: the fields named in `noteKeys` (at the top, and in
  * each of `results`) go as JSON inside one fence per note, path in its attrs; everything else stays
- * plain JSON, one line for the result and one per item. Undefined when there is no note text, so
+ * plain JSON, one line for the result (if it has other fields) and one per item. Undefined when there is no note text, so
  * the caller keeps the plain JSON.
  */
 export function fencedText(data: Obj, noteKeys: { top?: readonly string[]; item?: readonly string[] }): string | undefined {
@@ -67,7 +70,7 @@ export function fencedText(data: Obj, noteKeys: { top?: readonly string[]; item?
   let fenced = false;
   const add = (o: Obj, keys: readonly string[]) => {
     const [plain, note] = split(o, keys);
-    out.push(JSON.stringify(plain));
+    if (Object.keys(plain).length > 0) out.push(JSON.stringify(plain));
     if (Object.keys(note).length === 0) return;
     fenced = true;
     out.push(fence(JSON.stringify(note), typeof o.path === 'string' ? { path: o.path } : {}));

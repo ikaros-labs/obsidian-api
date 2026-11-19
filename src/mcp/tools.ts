@@ -140,7 +140,7 @@ const list = tool({
   async run(ctx, a) {
     if (a.view === 'tags') {
       const { json } = await api(ctx, { method: 'GET', url: `/v1/tags${qs({ folder: a.folder })}` });
-      return { data: json };
+      return withNotes(ctx, json, { top: ['results'] });
     }
     if (a.view === 'tree') {
       const { json } = await api(ctx, { method: 'GET', url: `/v1/tree/${encPath(a.folder)}${qs({ depth: a.max_depth, limit: a.limit })}` });
@@ -499,9 +499,9 @@ export function buildMcpServer(tools: ToolDef[], caller: Caller, opts: { fence: 
       { title: t.title, description: t.description, inputSchema: t.input, annotations: { title: t.title, ...t.annotations } },
       async (args: unknown) => {
         try {
-          return toResult(await t.run(ctx, args as never));
+          return toResult(await t.run(ctx, args as never), opts);
         } catch (e) {
-          if (e instanceof ToolError) return errorResult(e);
+          if (e instanceof ToolError) return errorResult(e, opts);
           throw e;
         }
       },
