@@ -10,6 +10,7 @@ export type ErrorCode =
   | 'patch_target_ambiguous'
   | 'folder_not_empty'
   | 'invalid_base'
+  | 'not_a_note'
   | 'payload_too_large'
   | 'rate_limited'
   | 'internal';

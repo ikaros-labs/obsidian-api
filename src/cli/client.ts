@@ -14,16 +14,20 @@ export const CLIENT_USAGE = `Client commands (need SPALL_TOKEN in the environmen
   search --related <path>               Notes similar to a note
   ls [folder] [--all] [--sort -modified] [--frontmatter] [--limit N]
   tags [folder]
-  read <path>                           Print the note (raw markdown)
+  read <path>                           Print the note (raw markdown), or a .base file's YAML
   read <path> --outline | --frontmatter | --section "A > B" [--index N]
+  read <path> --backlinks               Notes that link to this note
+  read <file.base> --outline            The base's views (same as base --views)
   new <folder> <title> [--body text|-] [--fm key=value ...] [--fail]
   edit <path> [--rev R] <change>...     Atomic; --rev fails if the note changed. Changes:
       --set key=value  --unset key  --append  --append-to "A > B"  --prepend-to H
       --replace-section H  (these take --content text|-)  --replace OLD --with NEW
-      --ops file.json|-  (a JSON array of spall_edit ops)
+      --replace-all (whole file)  --ops file.json|-  (a JSON array of spall_edit ops)
+      A .base file takes --replace/--with and --replace-all, and must stay a valid base
   mv <path> <destination> [--rename]   A destination ending in / or an existing folder: move into it
   trash <path> [--rev R]
   base <file.base> [--view V] [--limit N] [--cursor C]
+  base <file.base> --views              Its views: filters, sort, columns, default view
   mcp [--read-only] [--tools a,b]       MCP server over stdio
   doctor                                Check the URL, token and grants
 
@@ -54,7 +58,7 @@ const OPTIONS: Record<string, ParseArgsConfig['options']> = {
   search: { folder: { type: 'string' }, any: { type: 'boolean' }, limit: { type: 'string' }, cursor: { type: 'string' }, related: { type: 'string' } },
   ls: { all: { type: 'boolean' }, sort: { type: 'string' }, frontmatter: { type: 'boolean' }, limit: { type: 'string' }, cursor: { type: 'string' } },
   tags: {},
-  read: { outline: { type: 'boolean' }, frontmatter: { type: 'boolean' }, section: { type: 'string' }, index: { type: 'string' } },
+  read: { outline: { type: 'boolean' }, frontmatter: { type: 'boolean' }, section: { type: 'string' }, index: { type: 'string' }, backlinks: { type: 'boolean' } },
   new: { body: { type: 'string' }, fm: { type: 'string', multiple: true }, fail: { type: 'boolean' } },
   edit: {
     rev: { type: 'string' },
@@ -64,6 +68,7 @@ const OPTIONS: Record<string, ParseArgsConfig['options']> = {
     'append-to': { type: 'string' },
     'prepend-to': { type: 'string' },
     'replace-section': { type: 'string' },
+    'replace-all': { type: 'boolean' },
     content: { type: 'string' },
     replace: { type: 'string' },
     with: { type: 'string' },
@@ -71,7 +76,7 @@ const OPTIONS: Record<string, ParseArgsConfig['options']> = {
   },
   mv: { rename: { type: 'boolean' } },
   trash: { rev: { type: 'string' } },
-  base: { view: { type: 'string' }, limit: { type: 'string' }, cursor: { type: 'string' } },
+  base: { view: { type: 'string' }, limit: { type: 'string' }, cursor: { type: 'string' }, views: { type: 'boolean' } },
   mcp: { 'read-only': { type: 'boolean' }, tools: { type: 'string' } },
   doctor: {},
 };
@@ -128,7 +133,10 @@ export async function clientMain(argv: string[], io: IO): Promise<number | null>
       return 2;
     }
     if (e instanceof ToolError) {
-      e.message = e.message.replace(/spall_whoami/g, 'spall whoami');
+      e.message = e.message
+        .replace(/spall_(whoami|read|edit|trash)/g, 'spall $1')
+        .replace(/spall_move/g, 'spall mv')
+        .replace(/view=outline/g, '--outline');
       if (json) io.err(`${JSON.stringify({ error: { code: e.code, message: e.message, ...(e.details ? { details: e.details } : {}) } })}\n`);
       else io.err(`spall: ${e.code}: ${e.message}${e.details ? `\n${JSON.stringify(e.details, null, 2)}` : ''}\n`);
       return EXIT[e.code] ?? 1;
@@ -196,6 +204,36 @@ function print(ctx: Ctx, data: unknown, human: () => string) {
 const lines = (xs: string[]) => (xs.length ? `${xs.join('\n')}\n` : '');
 const more = (d: Record<string, unknown>) => (d.next_cursor ? `(more: --cursor ${d.next_cursor})\n` : '');
 
+interface BaseView {
+  name: string;
+  type: string;
+  filters: unknown;
+  order: string[] | null;
+  sort: { property: string; direction: string }[];
+  group_by: { property: string; direction: string } | null;
+  limit: number | null;
+}
+
+const oneLine = (x: unknown) => (typeof x === 'string' ? x : JSON.stringify(x));
+
+/** A base's views, as from spall_read view=outline on a .base file. */
+function formatViews(d: Record<string, unknown>): string {
+  const views = (d.views as BaseView[]) ?? [];
+  return lines([
+    `rev: ${d.rev}`,
+    `default view: ${d.default_view ?? '(none)'}`,
+    ...views.flatMap((v) => [
+      `${v.name}  (${v.type})`,
+      `  filters: ${v.filters === null ? '(none)' : oneLine(v.filters)}`,
+      `  sort: ${v.sort.length ? v.sort.map((s) => `${s.property} ${s.direction}`).join(', ') : '(none)'}`,
+      `  columns: ${v.order?.join(', ') ?? '(default)'}`,
+      ...(v.group_by ? [`  group by: ${v.group_by.property} ${v.group_by.direction}`] : []),
+      ...(v.limit !== null ? [`  limit: ${v.limit}`] : []),
+    ]),
+    ...((d.diagnostics as unknown[] | undefined)?.length ? [`diagnostics: ${JSON.stringify(d.diagnostics)}`] : []),
+  ]);
+}
+
 interface Heading {
   text: string;
   level: number;
@@ -253,8 +291,18 @@ const COMMANDS: Record<string, Command> = {
 
   async read(ctx, v, pos) {
     const path = arg(pos, 0, 'path');
+    if (v.backlinks) {
+      const d = await tool(ctx, 'spall_read', { path, view: 'backlinks' });
+      const back = d.backlinks as string[];
+      print(ctx, d, () => (back.length ? lines(back) : `(no notes you can read link to ${d.path})\n`));
+      return 0;
+    }
     if (v.outline) {
       const d = await tool(ctx, 'spall_read', { path, view: 'outline' });
+      if (d.views) {
+        print(ctx, d, () => formatViews(d));
+        return 0;
+      }
       const walk = (hs: Heading[]): string[] => hs.flatMap((h) => [`${'  '.repeat(h.level - 1)}${'#'.repeat(h.level)} ${h.text}  (line ${h.line})`, ...walk(h.children)]);
       print(ctx, d, () => lines([`rev: ${d.rev}`, ...walk(d.headings as Heading[])]));
       return 0;
@@ -308,6 +356,7 @@ const COMMANDS: Record<string, Command> = {
     if (v['append-to'] !== undefined) ops.push({ op: 'append', heading: v['append-to'], content: await content() });
     if (v['prepend-to'] !== undefined) ops.push({ op: 'prepend', heading: v['prepend-to'], content: await content() });
     if (v['replace-section'] !== undefined) ops.push({ op: 'replace', heading: v['replace-section'], content: await content() });
+    if (v['replace-all']) ops.push({ op: 'replace_all', content: await content() });
     if (v.replace !== undefined) {
       if (v.with === undefined) throw new UsageError('--replace needs --with');
       ops.push({ op: 'replace_text', old: v.replace, new: v.with });
@@ -331,6 +380,12 @@ const COMMANDS: Record<string, Command> = {
   },
 
   async base(ctx, v, pos) {
+    if (v.views) {
+      const p = arg(pos, 0, 'file.base');
+      const d = await tool(ctx, 'spall_read', { path: /\.base$/i.test(p) ? p : `${p}.base`, view: 'outline' });
+      print(ctx, d, () => formatViews(d));
+      return 0;
+    }
     const d = await tool(ctx, 'spall_query_base', { base: arg(pos, 0, 'file.base'), view: v.view, limit: int(v.limit as string, 'limit'), cursor: v.cursor });
     const cols = (d.columns as { key: string; name: string }[]) ?? [];
     const rows = d.results as { path: string; values: Record<string, unknown> }[];

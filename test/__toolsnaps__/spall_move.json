@@ -1,14 +1,14 @@
 {
   "name": "spall_move",
   "title": "Move or rename a note",
-  "description": "Moves or renames a note. Needs update+delete on the source and create on the destination. Links in other notes are not rewritten.",
+  "description": "Moves or renames a note (or a .base file). Needs update+delete on the source and create on the destination. Links in other notes are not rewritten.",
   "inputSchema": {
     "type": "object",
     "properties": {
       "path": {
         "type": "string",
         "minLength": 1,
-        "description": "Note path relative to your root; \".md\" optional"
+        "description": "Note path relative to your root (\".md\" optional), or a .base file"
       },
       "destination": {
         "type": "string",

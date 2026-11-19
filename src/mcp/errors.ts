@@ -19,6 +19,8 @@ const HINTS: Record<string, string> = {
   patch_target_ambiguous: 'Retry with `index` set to one of the candidates.',
   patch_target_not_found: 'Check the heading path with spall_read view=outline.',
   already_exists: 'Pick another name, or use on_conflict=rename.',
+  not_a_note: 'spall_read, spall_edit, spall_move and spall_trash take notes and .base files only.',
+  invalid_base: 'Nothing was written. Fix the YAML and retry; spall_read view=outline shows the current views.',
   rate_limited: 'Wait retry_after seconds, then retry.',
   unauthorized: 'The token is missing, invalid or expired.',
 };

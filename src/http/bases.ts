@@ -160,6 +160,7 @@ export function baseRoutes(app: FastifyInstance, s: Services) {
       filters: base.filters ?? null,
       formulas: base.formulas,
       properties: base.properties,
+      default_view: base.views[0]?.name ?? null,
       views: base.views.map((v) => ({
         name: v.name,
         type: v.type,

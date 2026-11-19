@@ -55,6 +55,29 @@ export async function noteJson(ctx: Ctx, real: string[], text: string, opts: { b
   return out;
 }
 
+/**
+ * `X.base` (or `X.png`, …) asked for as a note: when the account can read such a file and there is no
+ * `X.base.md` note, say it is not a note instead of not_found. Hidden files stay plain 404.
+ */
+export async function checkNotANote(ctx: Ctx, raw: string[], note: string[]): Promise<void> {
+  if (raw === note || !/\.[^.\s]+$/.test(raw.at(-1)!) || !ctx.perms(raw).has('read')) return;
+  const { vault } = ctx.s;
+  try {
+    const real = await vault.resolve(raw);
+    if (!ctx.perms(real).has('read') || (await vault.kindOf(real)) !== 'file') return;
+    if ((await vault.kindOf(await vault.resolve(note))) !== null) return;
+  } catch {
+    return;
+  }
+  const p = ctx.toApi(raw);
+  const base = /\.base$/i.test(p);
+  throw new ApiError(400, 'not_a_note', `${p} is a ${base ? 'base' : 'file'}, not a note`, {
+    path: p,
+    kind: base ? 'base' : 'file',
+    use: base ? `/v1/files/${p} (raw YAML), /v1/bases/${p} (views)` : `/v1/files/${p}`,
+  });
+}
+
 /** Permissions on a path and, if it goes through a symlink, on its target too. */
 function effectivePerms(ctx: Ctx, segs: string[], real: string[]): Set<Perm> {
   const a = ctx.perms(segs);
