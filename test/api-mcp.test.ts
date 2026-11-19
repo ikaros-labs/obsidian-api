@@ -115,6 +115,9 @@ describe('/mcp', () => {
     await c.close();
     expect(r.text).not.toContain('untrusted-content');
     expect(r.text).toContain('Nothing scheduled.');
+    // /v1/me reports it, so `spall mcp` (stdio) fences the same way.
+    expect((await env.req('eink', { method: 'GET', url: '/v1/me' })).json().mcp.fenced).toBe(false);
+    expect((await env.req('agent', { method: 'GET', url: '/v1/me' })).json().mcp.fenced).toBe(true);
   });
 
   it('fences note text in search, list, query_base and read views; paths stay plain', async () => {

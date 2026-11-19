@@ -79,7 +79,7 @@
     },
     "/v1/me": {
       "get": {
-        "summary": "The calling account: root, effective grants, token and the MCP tools it sees",
+        "summary": "The calling account: root, effective grants, token, the MCP tools it sees and whether they fence note text",
         "tags": [
           "System"
         ],

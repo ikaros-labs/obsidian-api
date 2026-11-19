@@ -65,12 +65,12 @@ Returns what the caller can actually do: the account name, its root, its effecti
   "access": [{ "path": ".", "permissions": ["read"] }],
   "rate_limit": "120/min",
   "token": { "name": "laptop", "expires": null },
-  "mcp": { "enabled": true, "tools": ["spall_whoami", "spall_search", "spall_list", "spall_read", "spall_query_base"] }
+  "mcp": { "enabled": true, "tools": ["spall_whoami", "spall_search", "spall_list", "spall_read", "spall_query_base"], "fenced": true }
 }
 ```
 
 - `access` lists only grants with at least one permission. A hidden folder (a grant with no permissions) is left out, so it looks the same as a folder that doesn't exist (see 404-not-403 above).
-- `mcp.tools` is the tool list `/mcp` gives this account: its grants narrowed by the account's `mcp` config. With MCP off on the server, `enabled` is `false` and `tools` is `[]`. The raw `mcp` config (`read_only`, `tools`, `fence_untrusted`) is not reported.
+- `mcp.tools` is the tool list `/mcp` gives this account: its grants narrowed by the account's `mcp` config. With MCP off on the server, `enabled` is `false` and `tools` is `[]`. `mcp.fenced` says whether MCP results fence note text for this account (its effective `fence_untrusted`). The raw `mcp` config (`read_only`, `tools: null`) is not reported.
 
 ### Notes
 
@@ -685,7 +685,7 @@ A tool is shown when **one** grant includes every permission it needs. Then each
 - the account's `mcp: {read_only, tools}` in the config;
 - `?read_only=1&tools=a,b` on `/mcp`, or `spall mcp --read-only --tools a,b`.
 
-`read_only` drops every tool without `readOnlyHint`. The tool list is computed per request, so config reloads apply immediately. `/v1/me` reports the resulting tool list (`mcp.tools`), so `spall mcp` (stdio) starts from the same list and its flags narrow it further. `spall mcp` always fences note text.
+`read_only` drops every tool without `readOnlyHint`. The tool list is computed per request, so config reloads apply immediately. `/v1/me` reports the resulting tool list (`mcp.tools`), so `spall mcp` (stdio) starts from the same list and its flags narrow it further; it fences note text when `mcp.fenced` is true.
 
 ### Results and errors
 - `structuredContent` and the text content come from one object. `structuredContent` always carries the raw values; the text content is what fencing changes.

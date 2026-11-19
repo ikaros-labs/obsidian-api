@@ -38,15 +38,16 @@ describe('auth', () => {
     expect(agent.mcp).toEqual({
       enabled: true,
       tools: ['spall_whoami', 'spall_search', 'spall_list', 'spall_read', 'spall_query_base', 'spall_create', 'spall_edit', 'spall_move', 'spall_trash'],
+      fenced: true,
     });
     // Read-only: only read tools; no raw config fields.
     const eink = await me('eink');
     expect(eink.access).toEqual([{ path: 'Dashboards/eink.md', permissions: ['read'] }]);
-    expect(eink.mcp).toEqual({ enabled: true, tools: ['spall_whoami', 'spall_search', 'spall_list', 'spall_read', 'spall_query_base'] });
+    expect(eink.mcp).toEqual({ enabled: true, tools: ['spall_whoami', 'spall_search', 'spall_list', 'spall_read', 'spall_query_base'], fenced: true });
     // Create-only.
     const dropbox = await me('dropbox');
     expect(dropbox.access).toEqual([{ path: '.', permissions: ['create'] }]);
-    expect(dropbox.mcp).toEqual({ enabled: true, tools: ['spall_whoami', 'spall_create'] });
+    expect(dropbox.mcp).toEqual({ enabled: true, tools: ['spall_whoami', 'spall_create'], fenced: true });
   });
 
   it('rate-limits per account', async () => {

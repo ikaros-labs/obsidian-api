@@ -466,14 +466,14 @@ const COMMANDS: Record<string, Command> = {
 
   async mcp(ctx, v) {
     const me = await tool(ctx, 'spall_whoami', {});
-    const mcp = me.mcp as { enabled: boolean; tools: string[] };
+    const mcp = me.mcp as { enabled: boolean; tools: string[]; fenced: boolean };
     if (!mcp.enabled) throw new ToolError('forbidden', 'MCP is disabled on this server (mcp.enabled: false)');
     // mcp.tools already applies the account's own narrowing; the flags narrow further.
     const tools = visibleTools(me.access as { permissions: string[] }[], { tools: mcp.tools }, {
       read_only: v['read-only'] === true,
       tools: typeof v.tools === 'string' ? v.tools.split(',').map((t) => t.trim()) : null,
     });
-    serveStdio(() => buildMcpServer(tools, ctx.caller, { fence: true }), {
+    serveStdio(() => buildMcpServer(tools, ctx.caller, { fence: mcp.fenced }), {
       onerror: (e) => ctx.io.err(`spall mcp: ${e.message}\n`),
     });
     return null;

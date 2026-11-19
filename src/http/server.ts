@@ -131,7 +131,7 @@ function routes(app: FastifyInstance, s: Services) {
 
   app.get('/openapi.json', { schema: doc({ summary: 'This OpenAPI document', tag: 'System', public: true }) }, async () => app.swagger());
 
-  app.get('/v1/me', { schema: doc({ summary: 'The calling account: root, effective grants, token and the MCP tools it sees', tag: 'System' }) }, async (req) => {
+  app.get('/v1/me', { schema: doc({ summary: 'The calling account: root, effective grants, token, the MCP tools it sees and whether they fence note text', tag: 'System' }) }, async (req) => {
     const ctx = new Ctx(req, s);
     const a = ctx.account;
     const enabled = s.config().mcp.enabled;
@@ -143,8 +143,9 @@ function routes(app: FastifyInstance, s: Services) {
       access: a.grants.filter((g) => g.permissions.length > 0),
       rate_limit: a.rateLimit.spec,
       token: { name: ctx.token.name, expires: ctx.token.expires ?? null },
-      // The MCP tools this account sees on /mcp (none when MCP is off on the server).
-      mcp: { enabled, tools: enabled ? visibleTools(a.grants, a.mcp).map((t) => t.name) : [] },
+      // The MCP tools this account sees on /mcp (none when MCP is off on the server), and whether
+      // note text is fenced, so `spall mcp` (stdio) behaves the same.
+      mcp: { enabled, tools: enabled ? visibleTools(a.grants, a.mcp).map((t) => t.name) : [], fenced: a.mcp.fence_untrusted },
     };
   });
 

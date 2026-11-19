@@ -330,7 +330,7 @@ All endpoints are under `/v1` (plus `/mcp`, see [Agents](#agents-mcp--cli)) and 
 
 | Endpoint | What |
 |---|---|
-| `GET /v1/me` | The calling account: root, effective grants (hidden folders left out), token, and the MCP tools it sees |
+| `GET /v1/me` | The calling account: root, effective grants (hidden folders left out), token, the MCP tools it sees and whether results are fenced |
 | `GET /v1/notes/{path}` | A note as JSON (frontmatter, body, links, tags), raw markdown (`Accept: text/markdown`) or an outline. `ETag`; `If-None-Match` → 304 |
 | `PUT /v1/notes/{path}` | Create or replace (markdown or `{frontmatter, body}`); `If-Match` → 412 on conflict |
 | `POST /v1/notes` | Create from `{folder, title, frontmatter?, body?}` |
