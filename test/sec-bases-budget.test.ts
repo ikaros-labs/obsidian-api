@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { Budget } from '../src/bases/engine.js';
 import { setup, type TestEnv } from './helpers.js';
 
 // F-02: a caller's filter or formula gets a fixed budget; it can't hold the shared event loop.
@@ -44,23 +45,55 @@ describe('Bases expression budget', () => {
   // Review round: one budget for the whole query, not one per phase.
   it('counts filters and columns against the same budget', async () => {
     const slow = (k: number) => `!/(a+)+$/.matches("${'a'.repeat(k)}!")`;
-    // Find an expression that takes 100 to 250 ms for one row on this machine.
+    // The fastest of three runs: other test files share the machine, and only the unloaded cost counts.
+    const fastest = async (account: string, payload: Record<string, unknown>) => {
+      let best = Infinity;
+      for (let i = 0; i < 3; i++) {
+        const { res, ms } = await query(account, payload);
+        if (res.statusCode === 200) best = Math.min(best, ms);
+      }
+      return best;
+    };
+    // An expression that takes 100 to 250 ms for one row on this machine.
     let k = 16;
     let one = 0;
     for (; k < 30; k++) {
-      one = (await query('one', { count_only: true, filters: slow(k) })).ms;
+      one = await fastest('one', { count_only: true, filters: slow(k) });
       if (one >= 100) break;
     }
-    const all = (await env.req('admin', { method: 'POST', url: '/v1/query', payload: { count_only: true } })).json().total as number;
-    const rows = Math.min(all, Math.max(2, Math.round(700 / one)));
-    const names = (await env.req('admin', { method: 'POST', url: '/v1/query', payload: { select: ['file.name'], limit: rows } })).json().results.map((r: { path: string }) => r.path);
-    expect(names.length).toBe(rows);
-    // About 0.7 s of filtering (the listed rows only) and 0.7 s of column values: each under a
-    // second, together over it.
-    const filters = `[${names.map((n: string) => JSON.stringify(n)).join(',')}].contains(file.path) && ${slow(k)}`;
-    const { res } = await query('admin', { filters, formulas: { f: slow(k) }, select: ['formula.f'], limit: rows });
+    const paths = (await env.req('admin', { method: 'POST', url: '/v1/query', payload: { select: ['file.name'], limit: 50 } })).json().results.map((r: { path: string }) => r.path) as string[];
+    let rows = Math.max(2, Math.round(800 / one));
+    const only = (n: number) => `[${paths.slice(0, n).map((p) => JSON.stringify(p)).join(',')}].contains(file.path)`;
+    // Filtering alone and the columns alone each fit the budget; together they are well over it.
+    let filtering = 0;
+    let columns = 0;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      expect(rows).toBeLessThanOrEqual(paths.length);
+      filtering = await fastest('admin', { count_only: true, filters: `${only(rows)} && ${slow(k)}` });
+      columns = await fastest('admin', { filters: only(rows), formulas: { f: slow(k) }, select: ['formula.f'], limit: rows });
+      if (Math.max(filtering, columns) === Infinity) rows = Math.max(2, Math.floor(rows * 0.8));
+      else if (filtering + columns < 1500) rows = Math.max(rows + 1, Math.ceil((rows * 1600) / (filtering + columns)));
+      else break;
+    }
+    expect(filtering + columns).toBeGreaterThan(1500);
+    const { res } = await query('admin', { filters: `${only(rows)} && ${slow(k)}`, formulas: { f: slow(k) }, select: ['formula.f'], limit: rows });
     expect(res.statusCode).toBe(400);
     expect(res.json().error.message).toMatch(/too expensive/);
+  }, 60_000);
+
+  it('Budget: time spent in one run is gone for the next', () => {
+    const busy = (ms: number) => () => {
+      const end = performance.now() + ms;
+      while (performance.now() < end);
+      return ms;
+    };
+    const budget = new Budget();
+    expect(budget.run(busy(600))).toBe(600);
+    const t0 = performance.now();
+    expect(() => budget.run(busy(600))).toThrow(/too expensive/);
+    expect(performance.now() - t0).toBeLessThan(550);
+    expect(() => budget.run(busy(1))).toThrow(/too expensive/);
+    expect(new Budget().run(busy(1))).toBe(1);
   });
 
   // Review round: sizes are checked before the operation that would build the value.
