@@ -113,7 +113,7 @@ describe('config', () => {
     expect(m.reload()).toBe(true);
     expect(m.current.server.port).toBe(8787);
     expect(m.current.accounts.size).toBe(0);
-    expect(errors.join()).toMatch(/restart to apply/);
+    expect(errors.join()).toMatch(/until a restart/);
   });
 });
 

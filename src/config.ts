@@ -183,11 +183,15 @@ export function isTimeZone(tz: string): boolean {
   }
 }
 
-/** Parses YAML text into a raw, schema-checked config. Throws ConfigError. */
-export function parseConfigText(text: string): RawConfig {
+/** Parses YAML text into plain data, not yet schema-checked. Throws ConfigError. */
+function parseYaml(text: string): unknown {
   const doc = parseDocument(text, { prettyErrors: true });
   if (doc.errors.length > 0) throw new ConfigError(doc.errors.map((e) => e.message));
-  const result = ConfigSchema.safeParse(doc.toJS() ?? {});
+  return doc.toJS() ?? {};
+}
+
+function checkSchema(data: unknown): RawConfig {
+  const result = ConfigSchema.safeParse(data);
   if (!result.success) {
     throw new ConfigError(
       result.error.issues.map((i) => `${i.path.length ? i.path.join('.') : '(root)'}: ${i.message}`),
@@ -196,15 +200,26 @@ export function parseConfigText(text: string): RawConfig {
   return result.data;
 }
 
-/** Checks cross-field rules and builds the runtime config. Throws ConfigError. */
-export function compileConfig(raw: RawConfig, configPath: string): Config {
+/** Parses YAML text into a raw, schema-checked config. Throws ConfigError. */
+export function parseConfigText(text: string): RawConfig {
+  return checkSchema(parseYaml(text));
+}
+
+/**
+ * Checks cross-field rules and builds the runtime config. Throws ConfigError. `runningVault` (on a
+ * reload) is the canonical vault root the server runs on; it is used as is, not resolved again.
+ */
+export function compileConfig(raw: RawConfig, configPath: string, runningVault?: string): Config {
   const problems: string[] = [];
   const tryPath = (p: string, where: string) => tryPathInto(p, where, problems);
 
   const configAbs = realpathLoose(configPath);
   const vaultPathRaw = path.resolve(path.dirname(configAbs), raw.vault.path);
   let vaultPath = vaultPathRaw;
-  if (!existsSync(vaultPathRaw) || !statSync(vaultPathRaw).isDirectory()) {
+  if (runningVault !== undefined) {
+    vaultPath = runningVault;
+    if (isInside(configAbs, vaultPath)) problems.push('the config file must live outside the vault');
+  } else if (!existsSync(vaultPathRaw) || !statSync(vaultPathRaw).isDirectory()) {
     problems.push(`vault.path: not a directory: ${vaultPathRaw}`);
   } else {
     vaultPath = realpathSync(vaultPathRaw);
@@ -290,24 +305,24 @@ export function compileConfig(raw: RawConfig, configPath: string): Config {
   };
 }
 
-function readConfig(configPath: string): RawConfig {
-  let text: string;
+function readConfigText(configPath: string): string {
   try {
-    text = readFileSync(configPath, 'utf8');
+    return readFileSync(configPath, 'utf8');
   } catch (e) {
     throw new ConfigError([`cannot read ${configPath}: ${(e as Error).message}`]);
   }
-  return parseConfigText(text);
 }
 
 export function loadConfig(configPath: string): Config {
-  return compileConfig(readConfig(configPath), configPath);
+  return compileConfig(parseConfigText(readConfigText(configPath)), configPath);
 }
 
 /** Settings that only take effect after a restart: the listener, and what the vault and index were built with. */
 function restartOnly(raw: RawConfig) {
   return { server: raw.server, path: raw.vault.path, trash: raw.vault.trash, follow_symlinks: raw.vault.follow_symlinks };
 }
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /**
  * Holds the current config and reloads it when the file changes (or on `reload()`). An invalid new
@@ -333,19 +348,29 @@ export class ConfigManager {
 
   reload(): boolean {
     let next: Config;
-    let pending = false;
+    let pending: string | null = null;
     try {
-      const raw = readConfig(this.config.configPath);
+      const data = parseYaml(readConfigText(this.config.configPath));
       const running = restartOnly(this.config.raw);
-      pending = JSON.stringify(restartOnly(raw)) !== JSON.stringify(running);
+      // What the file asks for, on its own: changed (or invalid) restart-only settings wait for a restart.
+      try {
+        if (JSON.stringify(restartOnly(checkSchema(data))) !== JSON.stringify(running)) pending = 'server or vault settings changed';
+      } catch {
+        pending = 'the file has invalid settings';
+      }
+      // Applied: the file with the running restart-only settings put back, before the schema check, so
+      // an invalid pending value (a bad port) can't hold back a valid change (a revoked token).
       const { server, path: vaultPath, trash, follow_symlinks } = running;
-      next = compileConfig({ ...raw, server, vault: { ...raw.vault, path: vaultPath, trash, follow_symlinks } }, this.config.configPath);
+      const overlaid = isObject(data)
+        ? { ...data, server, vault: { ...(isObject(data.vault) ? data.vault : {}), path: vaultPath, trash, follow_symlinks } }
+        : data;
+      next = compileConfig(checkSchema(overlaid), this.config.configPath, this.config.vaultPath);
     } catch (e) {
       this.log.error(`Config reload failed, keeping the previous config. ${(e as Error).message}`);
       return false;
     }
     this.config = next;
-    if (pending) this.log.error('Config reload: server or vault settings changed, restart to apply them; applied everything else');
+    if (pending) this.log.error(`Config reload: ${pending}; restart-only settings (server, vault path, trash, symlinks) keep their running values until a restart; applied everything else`);
     this.log.info(`Config reloaded (${next.accounts.size} accounts)`);
     return true;
   }
