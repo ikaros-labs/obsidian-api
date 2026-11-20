@@ -252,7 +252,7 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
     const ctx = new Ctx(req, s);
     const segs = ctx.urlPath(PREFIX);
     if (segs.length === ctx.account.root.length) throw alreadyExists('');
-    return s.vault.writes.run(async () => {
+    return s.vault.exclusive(async () => {
       const real = await s.vault.resolve(segs);
       const perms = ctx.perms(real);
       if (!perms.has('create')) throw perms.has('read') ? forbidden('create') : notFound();
@@ -271,7 +271,7 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
     const perm = permanent ? 'purge' : 'delete';
     const segs = ctx.urlPath(PREFIX);
     if (segs.length === ctx.account.root.length) throw invalidRequest('The root folder cannot be deleted');
-    return s.vault.writes.run(async () => {
+    return s.vault.exclusive(async () => {
       const real = await ctx.resolve(segs, 'read', perm);
       if ((await s.vault.kindOf(real)) !== 'folder') throw notFound();
       if (q.recursive !== 'true') {

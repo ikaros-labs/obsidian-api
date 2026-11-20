@@ -1,8 +1,8 @@
 import { appendFile, link, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ApiError, alreadyExists, notFound } from './errors.js';
-import { hasDotSegment, join, type Segs } from './paths.js';
-import type { VaultIndex } from './vault-index.js';
+import { hasDotSegment, join, split, type Segs } from './paths.js';
+import { revOf, type VaultIndex } from './vault-index.js';
 
 const errno = (e: unknown) => (e as NodeJS.ErrnoException).code;
 
@@ -37,13 +37,28 @@ export class PartialMoveError extends Error {
  * path really points inside the vault and keeps the index in sync.
  */
 export class Vault {
-  readonly writes = new WriteLock();
+  private readonly writes = new WriteLock();
+  /** Journal of in-place overwrites (see `overwrite`); a dot-folder, so never indexed or served. */
+  private readonly journal: string;
+  private journalSeq = 0;
+  /** An overwrite failed and couldn't be undone yet: recover before the next write. */
+  private recoveryPending = false;
 
   constructor(
     readonly root: string,
     readonly index: VaultIndex,
     private readonly opts: { followSymlinks: boolean; trash: string[] | null },
-  ) {}
+  ) {
+    this.journal = path.join(root, '.spall', 'journal');
+  }
+
+  /** Runs `fn` under the vault-wide write lock, after finishing any overwrite that failed earlier. */
+  exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    return this.writes.run(async () => {
+      if (this.recoveryPending) await this.recover();
+      return fn();
+    });
+  }
 
   abs(segs: Segs): string {
     return path.join(this.root, ...segs);
@@ -112,27 +127,100 @@ export class Vault {
     }
     try {
       await fh.writeFile(data);
-    } finally {
-      await fh.close();
+    } catch (e) {
+      // We made the file: don't leave a partial one behind.
+      await fh.close().catch(() => {});
+      await unlink(this.abs(segs)).catch(() => {});
+      throw e;
     }
+    await fh.close();
     await this.refreshChain(segs);
   }
 
   /**
    * Overwrites an existing file in place. Rename-over-temp would be atomic, but it gives the file a
-   * new inode and so a new birth time, which is what `created` is based on. A write that fails
-   * after truncating (disk full, I/O error) puts the old bytes back.
+   * new inode and so a new birth time, which is what `created` is based on. Instead the old bytes
+   * go to the journal first (synced), so a write that fails or a crash midway can always be undone:
+   * at once if possible, otherwise by `recover()` before the next write or at the next start.
    */
   async overwrite(segs: Segs, data: string | Buffer): Promise<void> {
     const file = this.abs(segs);
     const old = await readFile(file);
+    const id = `${Date.now()}-${process.pid}-${this.journalSeq++}`;
+    await this.journalWrite(id, segs, old, revOf(data));
     try {
       await writeFile(file, data);
     } catch (e) {
-      await writeFile(file, old).catch(() => {});
+      if (await writeFile(file, old).then(() => true, () => false)) await this.journalDrop(id);
+      else this.recoveryPending = true;
+      await this.index.refresh(join(segs));
       throw e;
     }
+    await this.journalDrop(id);
     await this.index.refresh(join(segs));
+  }
+
+  private async journalWrite(id: string, segs: Segs, old: Buffer, newRev: string): Promise<void> {
+    await mkdir(this.journal, { recursive: true });
+    const base = path.join(this.journal, id);
+    try {
+      await writeSynced(`${base}.old`, old);
+      // The record is what makes the entry count: written last, and atomically.
+      await writeSynced(`${base}.tmp`, JSON.stringify({ path: join(segs), new_rev: newRev }));
+      await rename(`${base}.tmp`, `${base}.json`);
+    } catch (e) {
+      await this.journalDrop(id);
+      throw e;
+    }
+  }
+
+  private async journalDrop(id: string): Promise<void> {
+    const base = path.join(this.journal, id);
+    await rm(`${base}.json`, { force: true });
+    await rm(`${base}.tmp`, { force: true });
+    await rm(`${base}.old`, { force: true });
+  }
+
+  /**
+   * Finishes overwrites that failed or were cut short: a file that doesn't hold the new bytes gets
+   * its old bytes back. Returns the vault paths restored. Entries it can't finish stay for next time.
+   */
+  async recover(): Promise<string[]> {
+    let names: string[];
+    try {
+      names = await readdir(this.journal);
+    } catch (e) {
+      if (errno(e) === 'ENOENT') return [];
+      throw e;
+    }
+    const restored: string[] = [];
+    let failed = false;
+    for (const id of new Set(names.map((n) => n.replace(/\.(json|old|tmp)$/, '')))) {
+      const base = path.join(this.journal, id);
+      let record: { path: string; new_rev: string } | null = null;
+      try {
+        record = JSON.parse(await readFile(`${base}.json`, 'utf8'));
+      } catch {
+        // No record: the in-place write never started.
+      }
+      if (record) {
+        try {
+          const segs = split(record.path);
+          const current = await readFile(this.abs(segs)).catch((e) => (errno(e) === 'ENOENT' ? null : Promise.reject(e)));
+          if (current !== null && revOf(current) !== record.new_rev) {
+            await writeFile(this.abs(segs), await readFile(`${base}.old`));
+            restored.push(record.path);
+            await this.index.refresh(record.path);
+          }
+        } catch {
+          failed = true;
+          continue;
+        }
+      }
+      await this.journalDrop(id);
+    }
+    this.recoveryPending = failed;
+    return restored;
   }
 
   async mkdir(segs: Segs): Promise<void> {
@@ -236,6 +324,16 @@ export class Vault {
   /** Re-indexes a new path; the index adds any parent folders created on the way. */
   private async refreshChain(segs: Segs): Promise<void> {
     await this.index.refresh(join(segs));
+  }
+}
+
+async function writeSynced(file: string, data: string | Buffer): Promise<void> {
+  const fh = await open(file, 'w');
+  try {
+    await fh.writeFile(data);
+    await fh.sync();
+  } finally {
+    await fh.close();
   }
 }
 

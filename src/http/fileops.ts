@@ -107,7 +107,7 @@ export async function putFile(ctx: Ctx, segs: string[], data: Buffer, reply: Fas
   const ifMatch = parseEtagList(header(ctx.req, 'if-match'));
   const ifNoneMatch = parseEtagList(header(ctx.req, 'if-none-match'));
 
-  return vault.writes.run(async () => {
+  return vault.exclusive(async () => {
     const real = await vault.resolve(segs);
     const perms = effectivePerms(ctx, segs, real);
     const existing = await vault.kindOf(real);
@@ -153,7 +153,7 @@ export async function deleteFile(ctx: Ctx, segs: string[], reply: FastifyReply) 
   const q = parse(DeleteQuery, ctx.req.query, 'query');
   const permanent = q.permanent === 'true';
   const { vault } = ctx.s;
-  return vault.writes.run(async () => {
+  return vault.exclusive(async () => {
     const real = await ctx.resolve(segs, 'read', permanent ? 'purge' : 'delete');
     if ((await vault.kindOf(real)) !== 'file') throw notFound();
     const rev = revOf(await vault.read(real));
@@ -177,7 +177,7 @@ export const MoveBody = z.strictObject({
 export async function moveFile(ctx: Ctx, segs: string[], body: unknown, kind: Kind) {
   const b = parse(MoveBody, body);
   const { vault } = ctx.s;
-  return vault.writes.run(async () => {
+  return vault.exclusive(async () => {
     let dest = ctx.toVault(parsePlainPath(b.destination));
     // "Folder/" or an existing folder the account can see: move into it, keeping the file name.
     const intoFolder =

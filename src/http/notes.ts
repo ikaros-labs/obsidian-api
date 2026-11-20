@@ -90,7 +90,7 @@ export function noteRoutes(app: FastifyInstance, s: Services) {
   app.post('/v1/notes', { schema: doc({ summary: 'Create a note from a title (the file name is derived from it)', tag: 'Notes', body: CreateBody }) }, async (req, reply) => {
     const ctx = new Ctx(req, s);
     const b = parse(CreateBody, req.body);
-    return s.vault.writes.run(async () => {
+    return s.vault.exclusive(async () => {
       const folder = await s.vault.resolve(ctx.toVault(parsePlainPath(b.folder)));
       const name = `${sanitizeTitle(b.title)}.md`;
       const perms = ctx.perms([...folder, name]);
@@ -124,7 +124,7 @@ export function noteRoutes(app: FastifyInstance, s: Services) {
     const body = parse(PatchBodySchema, req.body);
     const segs = await notePath(ctx);
     const ifMatch = body.if_match ? [body.if_match] : parseEtagList(header(req, 'if-match'));
-    return s.vault.writes.run(async () => {
+    return s.vault.exclusive(async () => {
       const real = await ctx.resolve(segs, 'read', 'update');
       const before = await s.vault.read(real);
       const oldRev = revOf(before);
