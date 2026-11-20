@@ -21,17 +21,18 @@ in-process, so they go through the same paths). "External" means anything outsid
 
 ## M1. Active config (hot reload)
 
-**Lives in** `src/config.ts:309-357` (`ConfigManager`), started by `src/cli/admin.ts:60-81`
-(`serve`: file watcher plus `SIGHUP`).
+**Lives in** `src/config.ts:293-367` (`readConfig`, `restartOnly`, `ConfigManager`), started by
+`src/cli/admin.ts:60-81` (`serve`: file watcher plus `SIGHUP`).
 
-**States.** `config.current` is one compiled `Config`. Implicitly the machine also has the file on
-disk, so the real state is the pair (*active*, *on disk*):
+**States.** `config.current` is one compiled `Config` (which keeps the `raw` YAML it came from).
+Implicitly the machine also has the file on disk, so the real state is the pair (*active*, *on disk*):
 
 - **InSync**: the active config was compiled from the file as it is.
 - **Debouncing**: the folder watcher saw the file change; a 200 ms timer is pending.
 - **Diverged(invalid)**: the file doesn't parse or compile; the previous config stays active.
-- **Diverged(restart)**: the file is valid but changes a restart-only setting (`server.*`,
-  `vault.path`, `vault.trash`, `vault.follow_symlinks`).
+- **PendingRestart**: the file changes a restart-only setting (`server.*`, `vault.path`,
+  `vault.trash`, `vault.follow_symlinks`); those keep their running values, everything else in the
+  file is active.
 - **Closed**: watcher and timer stopped.
 
 **Invariants.**
@@ -45,19 +46,19 @@ disk, so the real state is the pair (*active*, *on disk*):
 
 | From | Event | To | Guard | Code |
 | --- | --- | --- | --- | --- |
-| InSync | file in the config folder changes | Debouncing | name == config file name | `config.ts:346-350` |
-| Debouncing | another change | Debouncing (timer restarted) | | `config.ts:348` |
-| Debouncing / any | timer fires, or `SIGHUP` → `reload()` | InSync (new config) | file compiles, restart-only settings unchanged | `config.ts:326-341` |
-| Debouncing / any | `reload()` | Diverged(invalid) | parse/compile error | `config.ts:328-333` |
-| Debouncing / any | `reload()` | **Diverged(restart): nothing applied** | restart-only setting changed | `config.ts:334-337` (**B4**) |
-| any | `close()` | Closed | | `config.ts:353-356` |
+| InSync | file in the config folder changes | Debouncing | name == config file name | `config.ts:354-361` |
+| Debouncing | another change | Debouncing (timer restarted) | | `config.ts:358` |
+| Debouncing / any | timer fires, or `SIGHUP` → `reload()` | InSync (new config) | file compiles, restart-only settings unchanged | `config.ts:334-351` |
+| Debouncing / any | `reload()` | PendingRestart (new config, running restart-only settings, error logged) | file compiles with the running restart-only settings | `config.ts:338-349` |
+| Debouncing / any | `reload()` | Diverged(invalid) | parse/compile error | `config.ts:344-346` |
+| any | `close()` | Closed | | `config.ts:363-366` |
 
 Requests read `s.config()` once in `onRequest` (`server.ts:75`) and keep the `Account` they got,
 so a reload never changes the rules in the middle of a request.
 
-**Reachable invalid state.** **B4**: Diverged(restart) drops *every* change in the edit, not only
-the restart-only one. While the file holds a pending restart-only change, all later edits
-(revocations, removed accounts, narrowed grants) are ignored too, until someone restarts. Breaks I1.3.
+**Invalid state (fixed by I3).** **B4**: before I3, a reload that changed a restart-only setting
+was rejected as a whole (`Diverged(restart)`), dropping *every* change in the edit and in all later
+edits (revocations, removed accounts, narrowed grants) until someone restarted. Broke I1.3.
 
 ---
 
@@ -88,7 +89,7 @@ What the server enforces is the token's state *in the active config* (M1), not i
 | Absent | `spall token create` | Active (or Expired if `--expires` is past) | account exists | `admin.ts:144-162` |
 | Active | clock passes `expires` | Expired | | `tokens.ts:20-23`, checked per request `server.ts:77` |
 | Active / Expired | `spall token revoke` | Absent | name exists | `admin.ts:174-180` |
-| any | admin edits the file | anything | file compiles | via M1 |
+| any | admin edits the file | anything | file compiles (restart-only settings aside) | via M1 |
 | Active (on disk) | request | authenticated | Active **in the active config** | `server.ts:73-81` |
 
 The CLI edits the file with read → edit → validate → write temp → rename (`editConfig`,
@@ -102,7 +103,7 @@ another writer.
   Active.
 - **B6** (breaks I2.3): two concurrent edits each read the same file and the second rename wins;
   the first `token create` printed a token that is not in the file.
-- Through **B4**, a token revoked in the file can stay Active on the server.
+- Through **B4** (fixed by I3), a token revoked in the file could stay Active on the server.
 
 ---
 
@@ -396,7 +397,7 @@ breaks I11.2 (no lock between Read and Renamed).
 | B1 | M5, M8 | data loss, security | Recursive folder delete purges/trashes a file another account wrote after the permission check; the deleter could not see it | `test/sm-write-lock.test.ts` "B1 …" (parks `Vault.purge`, runs the other account's PUT) | fixed (I1) |
 | B2 | M5, M6 | data loss | Two PATCHes of one note through a symlink alias and its real path both apply to the old text; one edit is lost | `test/sm-write-lock.test.ts` "B2 …" (parks `Vault.overwrite`) | fixed (I1) |
 | B3 | M6 | data loss | A write that fails after truncating (ENOSPC, EIO) leaves a partial note and returns 500 | `test/sm-overwrite-fault.test.ts` (injects ENOSPC after 3 bytes) | fixed (I2) |
-| B4 | M1, M2 | security | A config edit that also touches a restart-only setting is ignored entirely, so a token revoked in it stays valid until restart | `test/sm-config-reload.test.ts` | open |
+| B4 | M1, M2 | security | A config edit that also touches a restart-only setting is ignored entirely, so a token revoked in it stays valid until restart | `test/sm-config-reload.test.ts` | fixed (I3) |
 | B5 | M2, M11 | security | `token revoke` after a concurrent edit deletes the wrong token; the one asked for stays valid | `test/sm-cli-tokens.test.ts` "B5 …" (another revoke lands between load and edit) | open |
 | B6 | M2, M11 | wrong user-visible state | Concurrent `token create` + another edit: the printed token is not in the file | `test/sm-cli-tokens.test.ts` "B6 …" (child CLI process vs. a writer holding the file) | open |
 | B7 | M7 | wrong user-visible state (duplicate file) | `unlink` of the source fails after `link`: the file exists at both paths; with EPERM the API answers 409 for its own link; retries keep failing | `test/sm-move-fault.test.ts` (injects EACCES / EPERM on unlink) | open |
@@ -431,15 +432,17 @@ Grouped fixes, in priority order. One commit each, each with the regression test
 - **Impact:** data loss.
 - **Fix:** `Vault.overwrite` keeps the old bytes and writes them back if the in-place write fails,
   then rethrows. Keeps the inode (and so `created`), per D2.
-- **Commit:** —
+- **Commit:** `7738465`
 - **Test:** `test/sm-overwrite-fault.test.ts`
 
 ### I3. Apply hot settings of a reload that also changes restart-only ones
 - **Bugs:** B4.
 - **Impact:** security.
-- **Fix:** —
-- **Commit:** —
-- **Test:** `test/sm-config-reload.test.ts`
+- **Fix:** `Config` keeps its raw YAML. `reload()` compiles the new file with the running
+  restart-only settings put back, applies it, and logs that those settings need a restart. The old
+  test "rejects reloads that change restart-only settings" now checks the new behaviour.
+- **Commit:** COMMIT_I3
+- **Test:** `test/sm-config-reload.test.ts`, `test/config.test.ts` ("keeps restart-only settings…")
 
 ### I4. Lock CLI config edits and decide inside the lock
 - **Bugs:** B5, B6.

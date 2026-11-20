@@ -105,12 +105,15 @@ describe('config', () => {
     expect([...m.current.accounts.keys()]).toEqual(['b']);
   });
 
-  it('rejects reloads that change restart-only settings', () => {
+  it('keeps restart-only settings on reload, and applies the rest', () => {
     write(base(`  a:\n    access: { .: read }`));
-    const m = ConfigManager.load(cfgFile(), { info() {}, error() {} });
+    const errors: string[] = [];
+    const m = ConfigManager.load(cfgFile(), { info() {}, error: (e) => errors.push(e) });
     write(`version: 1\nserver: { port: 9999 }\nvault: { path: ./vault }\n`);
-    expect(m.reload()).toBe(false);
+    expect(m.reload()).toBe(true);
     expect(m.current.server.port).toBe(8787);
+    expect(m.current.accounts.size).toBe(0);
+    expect(errors.join()).toMatch(/restart to apply/);
   });
 });
 

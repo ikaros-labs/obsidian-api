@@ -128,6 +128,8 @@ export interface McpConfig {
 
 export interface Config {
   configPath: string;
+  /** The schema-checked YAML this config was compiled from. */
+  raw: RawConfig;
   server: { host: string; port: number; maxBody: number };
   vaultPath: string;
   /** Vault-relative trash folder, or null when DELETE without `permanent` is disabled. */
@@ -274,6 +276,7 @@ export function compileConfig(raw: RawConfig, configPath: string): Config {
   if (problems.length > 0) throw new ConfigError(problems);
   return {
     configPath: configAbs,
+    raw,
     server: { host: raw.server.host, port: raw.server.port, maxBody: parseSize(raw.server.max_body) },
     vaultPath,
     trash,
@@ -287,24 +290,29 @@ export function compileConfig(raw: RawConfig, configPath: string): Config {
   };
 }
 
-export function loadConfig(configPath: string): Config {
+function readConfig(configPath: string): RawConfig {
   let text: string;
   try {
     text = readFileSync(configPath, 'utf8');
   } catch (e) {
     throw new ConfigError([`cannot read ${configPath}: ${(e as Error).message}`]);
   }
-  return compileConfig(parseConfigText(text), configPath);
+  return parseConfigText(text);
 }
 
-/** Settings that only take effect after a restart. */
-function restartKey(c: Config): string {
-  return JSON.stringify([c.server, c.vaultPath, c.trash, c.followSymlinks]);
+export function loadConfig(configPath: string): Config {
+  return compileConfig(readConfig(configPath), configPath);
+}
+
+/** Settings that only take effect after a restart: the listener, and what the vault and index were built with. */
+function restartOnly(raw: RawConfig) {
+  return { server: raw.server, path: raw.vault.path, trash: raw.vault.trash, follow_symlinks: raw.vault.follow_symlinks };
 }
 
 /**
  * Holds the current config and reloads it when the file changes (or on `reload()`). An invalid new
- * config is rejected and the previous one stays active.
+ * config is rejected and the previous one stays active. Restart-only settings keep their running
+ * values; everything else (accounts, tokens, grants, …) is applied right away.
  */
 export class ConfigManager {
   private watcher: FSWatcher | null = null;
@@ -325,17 +333,19 @@ export class ConfigManager {
 
   reload(): boolean {
     let next: Config;
+    let pending = false;
     try {
-      next = loadConfig(this.config.configPath);
+      const raw = readConfig(this.config.configPath);
+      const running = restartOnly(this.config.raw);
+      pending = JSON.stringify(restartOnly(raw)) !== JSON.stringify(running);
+      const { server, path: vaultPath, trash, follow_symlinks } = running;
+      next = compileConfig({ ...raw, server, vault: { ...raw.vault, path: vaultPath, trash, follow_symlinks } }, this.config.configPath);
     } catch (e) {
       this.log.error(`Config reload failed, keeping the previous config. ${(e as Error).message}`);
       return false;
     }
-    if (restartKey(next) !== restartKey(this.config)) {
-      this.log.error('Config reload rejected: server or vault settings changed, restart to apply them');
-      return false;
-    }
     this.config = next;
+    if (pending) this.log.error('Config reload: server or vault settings changed, restart to apply them; applied everything else');
     this.log.info(`Config reloaded (${next.accounts.size} accounts)`);
     return true;
   }
