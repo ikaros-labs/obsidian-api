@@ -1,8 +1,8 @@
 # Spall state machines
 
 What state Spall keeps, how it moves, and where it can go wrong. Written from the code at
-`21b9c3a` (1.2.3) on 2026-11-20. Line numbers refer to that tree unless a fix moved them; every
-fix below updates its table.
+`21b9c3a` (1.2.3) on 2026-11-20 and kept current through the fixes below: line numbers refer to
+the tree with all of them applied.
 
 Spall has no database. Its state is spread over four places, and most machines below are implicit:
 they are combinations of these.
@@ -22,7 +22,7 @@ in-process, so they go through the same paths). "External" means anything outsid
 ## M1. Active config (hot reload)
 
 **Lives in** `src/config.ts:293-367` (`readConfig`, `restartOnly`, `ConfigManager`), started by
-`src/cli/admin.ts:60-81` (`serve`: file watcher plus `SIGHUP`).
+`src/cli/admin.ts:104-125` (`serve`: file watcher plus `SIGHUP`).
 
 **States.** `config.current` is one compiled `Config` (which keeps the `raw` YAML it came from).
 Implicitly the machine also has the file on disk, so the real state is the pair (*active*, *on disk*):
@@ -78,7 +78,7 @@ What the server enforces is the token's state *in the active config* (M1), not i
 
 **Invariants.**
 - I2.1 A plain token is never stored; only its SHA-256 (`config.ts:21-26`).
-- I2.2 Hashes are unique across all accounts; names are unique within an account (`config.ts:264-271`).
+- I2.2 Hashes are unique across all accounts; names are unique within an account (`config.ts:266-273`).
 - I2.3 A token printed by `token create` is in the file when the command exits 0.
 - I2.4 `token revoke <account> <name>` removes exactly that token, no other.
 
@@ -116,7 +116,7 @@ grant).
 
 **Invariants.**
 - I3.1 Checks run in this order: root, dot segments, `vault.exclude` (including a non-dot trash
-  folder, `config.ts:225-226`), deepest grant. The first match wins.
+  folder, `config.ts:227-228`), deepest grant. The first match wins.
 - I3.2 Paths are compared by `matchKey` (NFC, case-folded, leading spaces and trailing dots/spaces
   stripped), so aliases of one path get one decision.
 - I3.3 `update`, `delete` and `purge` imply `read` (rejected at compile time otherwise).
@@ -188,8 +188,8 @@ External writers (Obsidian, sync) can't take the lock; see U3.
 ## M6. A file in the vault (notes and attachments)
 
 **Lives in** `src/http/fileops.ts` (`putFile` 103-147, `deleteFile` 151-169, `moveFile` 176-207),
-`src/http/notes.ts` (POST 90-117, PATCH 119-140), `src/vault.ts` (`create` 105-120,
-`overwrite` 126-129, `trash` 160-167, `purge` 169-172).
+`src/http/notes.ts` (POST 90-119, PATCH 121-142), `src/vault.ts` (`create` 93-108,
+`overwrite` 110-125, `trash` 167-174, `purge` 176-179).
 
 **States** per path: **Absent**; **Present(rev)** where `rev = sha256(bytes)[:16]`; **Trashed** (moved
 to `trash/<same path>` or `… N.ext`); **Partial** (the bytes on disk are neither the old nor the new
@@ -205,18 +205,18 @@ content: must never be observable after a request ends).
 
 | From | Event | To | Guard | Code |
 | --- | --- | --- | --- | --- |
-| Absent | PUT | Present(r) | `create` perm; no `If-Match` other than none; `O_EXCL` | `fileops.ts:131-140`, `vault.ts:105-120` |
-| Absent | POST /notes | Present(r) at `Title.md` or `Title N.md` | `create` on folder; `on_conflict` | `notes.ts:90-117` |
+| Absent | PUT | Present(r) | `create` perm; no `If-Match` other than none; `O_EXCL` | `fileops.ts:131-140`, `vault.ts:93-108` |
+| Absent | POST /notes | Present(r) at `Title.md` or `Title N.md` | `create` on folder; `on_conflict` | `notes.ts:90-119` |
 | Present(r) | PUT | Present(r') | `read`+`update`; `If-Match` ∋ r; not `If-None-Match: *` | `fileops.ts:118-130` |
-| Present(r) | PATCH | Present(r') (or unchanged if no-op) | `read`+`update`; `if_match` ∋ r | `notes.ts:125-139` |
-| Present(r) | DELETE | Trashed | `read`+`delete`; `If-Match` | `fileops.ts:151-169`, `vault.ts:160-167` |
-| Present(r) | DELETE `permanent=true` | Absent | `read`+`purge` | `vault.ts:169-172` |
+| Present(r) | PATCH | Present(r') (or unchanged if no-op) | `read`+`update`; `if_match` ∋ r | `notes.ts:127-141` |
+| Present(r) | DELETE | Trashed | `read`+`delete`; `If-Match` | `fileops.ts:151-169`, `vault.ts:167-174` |
+| Present(r) | DELETE `permanent=true` | Absent | `read`+`purge` | `vault.ts:176-179` |
 | Present(r) at A | move to B | Absent at A, Present(r) at B | see M7 | `fileops.ts:176-207` |
 | Present(r) | overwrite fails midway | Present(r): old bytes written back, error returned | | `Vault.overwrite` (fixed **B3**) |
 | any | external write / delete | any | | M9 picks it up |
 
 `overwrite` writes in place on purpose: a rename over a temp file would give the note a new inode and
-so a new birth time, which is what `created` reports (`vault.ts:122-125`).
+so a new birth time, which is what `created` reports (`vault.ts:110-114`).
 
 **Retries.** PUT with `If-None-Match: *` (create) and PUT/PATCH with `If-Match` are safe to retry: a
 retry after a lost response gets 409/412 and the current rev, not a second write. DELETE and move
@@ -228,7 +228,7 @@ retries get 404 once the first one went through. `POST /v1/notes` with the defau
   (disk full, quota, I/O error), the request returned 500 and the note held only the bytes written
   so far. `overwrite` now reads the old bytes first and writes them back when the write fails; the
   index is untouched, so the client's old rev still matches. A crash mid-write is still U1.
-- **B9**: the audit line is written after the change (`fileops.ts:129`, `notes.ts:113`, …). If that
+- **B9**: the audit line is written after the change (`fileops.ts:129`, `notes.ts:114`, …). If that
   write fails, the client gets 500 for a change that happened; a retry of `POST /v1/notes` then
   makes a duplicate.
 
@@ -268,8 +268,8 @@ retries get 404 once the first one went through. `POST /v1/notes` with the defau
 
 ## M8. A folder in the vault
 
-**Lives in** `src/http/folders.ts:251-292`, `src/vault.ts:131-140` (`mkdir`), `174-184`
-(`rmdirEmpty`), `160-172` (`trash`, `purge`).
+**Lives in** `src/http/folders.ts:251-294`, `src/vault.ts:127-136` (`mkdir`), `181-191`
+(`rmdirEmpty`), `167-179` (`trash`, `purge`).
 
 **States:** **Absent**, **Empty**, **NonEmpty(visible to the caller)**, **NonEmpty(has entries the
 caller can't see or can't delete)**, **Trashed**.
@@ -277,17 +277,17 @@ caller can't see or can't delete)**, **Trashed**.
 **Invariants.**
 - I8.1 A recursive delete only removes what the caller may delete: everything inside must be
   indexed (no dotfiles, no skipped symlinks) and carry `delete`/`purge` for the caller
-  (`folders.ts:280-286`).
+  (`folders.ts:282-288`).
 - I8.2 The root of an account can't be deleted.
 
 | From | Event | To | Guard | Code |
 | --- | --- | --- | --- | --- |
-| Absent | POST /folders | Empty | `create` | `folders.ts:251-263` |
-| Absent | PUT/POST of a file below | NonEmpty (parents made with `mkdir -p`) | | `vault.ts:106` |
-| Empty | DELETE | Absent | `read`+`delete` | `folders.ts:275-279` |
-| NonEmpty | DELETE | 409 `folder_not_empty` | not `recursive` | `vault.ts:178-180` |
-| NonEmpty(visible) | DELETE `recursive=true` | Trashed / Absent | check passes | `folders.ts:280-290` |
-| NonEmpty(hidden) | DELETE `recursive=true` | 409 / 403 | check fails | `folders.ts:284-285` |
+| Absent | POST /folders | Empty | `create` | `folders.ts:251-265` |
+| Absent | PUT/POST of a file below | NonEmpty (parents made with `mkdir -p`) | | `vault.ts:94` |
+| Empty | DELETE | Absent | `read`+`delete` | `folders.ts:277-281` |
+| NonEmpty | DELETE | 409 `folder_not_empty` | not `recursive` | `vault.ts:185-187` |
+| NonEmpty(visible) | DELETE `recursive=true` | Trashed / Absent | check passes | `folders.ts:282-293` |
+| NonEmpty(hidden) | DELETE `recursive=true` | 409 / 403 | check fails | `folders.ts:286-287` |
 
 **Invalid state (fixed by I1).** **B1** (M5): between the check and the trash/purge, another request
 could turn NonEmpty(visible) into NonEmpty(hidden), and the hidden file was removed anyway. The
@@ -402,7 +402,7 @@ file and the second rename winning.
 
 ## Reachable invalid states and transitions (confirmed)
 
-"Confirmed" = reproduced by a test that fails on `21b9c3a`. Ordered by impact.
+"Confirmed" = reproduced by a test that fails on `21b9c3a` (B9: by a scratch reproduction, described in its row). Ordered by impact.
 
 | Bug | Machine | Impact | What happens | Reproduced by | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -479,7 +479,7 @@ Grouped fixes, in priority order. One commit each, each with the regression test
 - **Impact:** wrong user-visible state.
 - **Fix:** `doRefresh` returns without indexing a path when refreshing its missing parent didn't
   index the parent (it is gone).
-- **Commit:** COMMIT_I6
+- **Commit:** `56ed2e6`
 - **Test:** `test/sm-index-race.test.ts`
 
 ## Decisions
