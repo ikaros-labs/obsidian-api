@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Spall",
-    "version": "1.2.2",
+    "version": "1.2.3",
     "description": "Scoped REST API for an Obsidian vault: every account sees only the folders it is granted.",
     "license": {
       "name": "MIT",
