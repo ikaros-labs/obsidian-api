@@ -254,13 +254,15 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
     const ctx = new Ctx(req, s);
     const segs = ctx.urlPath(PREFIX);
     if (segs.length === ctx.account.root.length) throw alreadyExists('');
-    const { real, perms } = await writablePath(ctx, segs);
-    if (!perms.has('create')) throw perms.has('read') ? forbidden('create') : notFound();
-    if ((await s.vault.kindOf(real)) !== null) throw alreadyExists(ctx.toApi(real));
-    await s.vault.mkdir(real);
-    await ctx.audit('mkdir', real);
-    reply.code(201);
-    return { kind: 'folder', path: ctx.toApi(real) };
+    return s.vault.locks.run([join(segs)], async () => {
+      const { real, perms } = await writablePath(ctx, segs);
+      if (!perms.has('create')) throw perms.has('read') ? forbidden('create') : notFound();
+      if ((await s.vault.kindOf(real)) !== null) throw alreadyExists(ctx.toApi(real));
+      await s.vault.mkdir(real);
+      await ctx.audit('mkdir', real);
+      reply.code(201);
+      return { kind: 'folder', path: ctx.toApi(real) };
+    });
   });
 
   app.delete('/v1/folders/*', { schema: doc({ summary: 'Delete a folder (recursive=true for non-empty ones)', tag: 'Folders', url: '/v1/folders/{path}', query: DeleteQuery }) }, async (req, reply) => {
@@ -270,7 +272,10 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
     const perm = permanent ? 'purge' : 'delete';
     const segs = ctx.urlPath(PREFIX);
     if (segs.length === ctx.account.root.length) throw invalidRequest('The root folder cannot be deleted');
-    return s.vault.locks.run([join(segs)], async () => {
+    // A recursive delete checks every child and then removes the folder as a whole: nothing below
+    // it may change in between.
+    const locked = <T>(fn: () => Promise<T>) => (q.recursive === 'true' ? s.vault.locks.runTree(join(segs), fn) : s.vault.locks.run([join(segs)], fn));
+    return locked(async () => {
       const real = await ctx.resolve(segs, 'read', perm);
       if ((await s.vault.kindOf(real)) !== 'folder') throw notFound();
       if (q.recursive !== 'true') {
@@ -282,8 +287,9 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
       const raw = await readdir(s.vault.abs(real), { recursive: true });
       for (const rel of raw) {
         const e = s.index.get(join([...real, ...split(rel.split('\\').join('/'))].map((x) => x.normalize('NFC'))));
-        if (!e) throw new ApiError(409, 'folder_not_empty', 'The folder contains files this account cannot see');
-        if (!ctx.perms(e.segs).has(perm)) throw forbidden(`${perm} everything`);
+        // A symlink whose target the account can't read is not something it can see either.
+        if (!e || (e.real && !ctx.can(e.real, 'read'))) throw new ApiError(409, 'folder_not_empty', 'The folder contains files this account cannot see');
+        if (!ctx.perms(e.segs).has(perm) || (e.real && !ctx.perms(e.real).has(perm))) throw forbidden(`${perm} everything`);
       }
       if (permanent) await s.vault.purge(real);
       else await s.vault.trash(real);

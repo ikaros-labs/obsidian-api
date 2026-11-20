@@ -6,12 +6,26 @@ import type { VaultIndex } from './vault-index.js';
 
 const errno = (e: unknown) => (e as NodeJS.ErrnoException).code;
 
-/** Per-key async mutex. */
+const under = (key: string, tree: string) => key === tree || key.startsWith(`${tree}/`);
+
+/**
+ * Per-key async mutex. `runTree` also holds off everything below its key, for an operation that
+ * checks a folder's contents and then acts on the folder as a whole.
+ */
 class Locks {
   private tails = new Map<string, Promise<void>>();
+  /** Subtrees held by `runTree`, each with a promise that settles when it is released. */
+  private trees = new Map<string, Promise<void>>();
 
-  async run<T>(keys: string[], fn: () => Promise<T>): Promise<T> {
+  async run<T>(keys: string[], fn: () => Promise<T>, tree?: string): Promise<T> {
     const sorted = [...new Set(keys.map((k) => k.toLowerCase()))].sort();
+    // Wait until no held subtree covers a key. No await follows before the keys are queued below, so
+    // a subtree can't be taken in between.
+    for (;;) {
+      const held = [...this.trees].find(([t]) => t !== tree && sorted.some((k) => under(k, t)));
+      if (!held) break;
+      await held[1];
+    }
     const releases: (() => void)[] = [];
     for (const key of sorted) {
       const prev = this.tails.get(key) ?? Promise.resolve();
@@ -29,6 +43,31 @@ class Locks {
       return await fn();
     } finally {
       releases.reverse().forEach((r) => r());
+    }
+  }
+
+  /**
+   * Runs `fn` with `key` and everything below it locked: operations below that are already queued
+   * or running finish first, later ones wait until `fn` is done.
+   */
+  async runTree<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const tree = key.toLowerCase();
+    let release!: () => void;
+    // Announced before queueing on the key itself, so nothing new starts below while waiting for it.
+    while (this.trees.has(tree)) await this.trees.get(tree);
+    this.trees.set(tree, new Promise<void>((r) => (release = r)));
+    try {
+      return await this.run([key], async () => {
+        for (;;) {
+          const busy = [...this.tails].filter(([k]) => k !== tree && under(k, tree)).map(([, tail]) => tail);
+          if (busy.length === 0) break;
+          await Promise.all(busy);
+        }
+        return fn();
+      }, tree);
+    } finally {
+      this.trees.delete(tree);
+      release();
     }
   }
 }

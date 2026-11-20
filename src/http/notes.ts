@@ -91,29 +91,32 @@ export function noteRoutes(app: FastifyInstance, s: Services) {
     const ctx = new Ctx(req, s);
     const b = parse(CreateBody, req.body);
     const name = `${sanitizeTitle(b.title)}.md`;
-    // The folder as requested and the folder it resolves to must both allow the new note.
-    const { real: folder, perms } = await writablePath(ctx, ctx.toVault(parsePlainPath(b.folder)), name);
-    if (!perms.has('create')) throw perms.has('read') ? forbidden('create') : notFound();
-    if ((await s.vault.kindOf(folder)) === 'file') throw new ApiError(400, 'invalid_path', 'folder is a file');
+    const requested = ctx.toVault(parsePlainPath(b.folder));
+    return s.vault.locks.run([join([...requested, name])], async () => {
+      // The folder as requested and the folder it resolves to must both allow the new note.
+      const { real: folder, perms } = await writablePath(ctx, requested, name);
+      if (!perms.has('create')) throw perms.has('read') ? forbidden('create') : notFound();
+      if ((await s.vault.kindOf(folder)) === 'file') throw new ApiError(400, 'invalid_path', 'folder is a file');
 
-    const data = Buffer.from(renderNote(b.frontmatter, b.body), 'utf8');
-    let target = [...folder, name];
-    for (let attempt = 0; ; attempt++) {
-      try {
-        await s.vault.create(target, data);
-        break;
-      } catch (e) {
-        if (!(e instanceof ApiError && e.code === 'already_exists') || b.on_conflict === 'fail' || attempt > 50) {
-          throw e instanceof ApiError && e.code === 'already_exists' ? alreadyExists(ctx.toApi(target)) : e;
+      const data = Buffer.from(renderNote(b.frontmatter, b.body), 'utf8');
+      let target = [...folder, name];
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await s.vault.create(target, data);
+          break;
+        } catch (e) {
+          if (!(e instanceof ApiError && e.code === 'already_exists') || b.on_conflict === 'fail' || attempt > 50) {
+            throw e instanceof ApiError && e.code === 'already_exists' ? alreadyExists(ctx.toApi(target)) : e;
+          }
+          target = await s.vault.freePath(target);
         }
-        target = await s.vault.freePath(target);
       }
-    }
-    const rev = revOf(data);
-    await ctx.audit('create', target, { new_rev: rev });
-    reply.code(201).header('etag', etag(rev));
-    if (!perms.has('read')) return { path: ctx.toApi(target), rev };
-    return noteJson(ctx, target, data.toString('utf8'));
+      const rev = revOf(data);
+      await ctx.audit('create', target, { new_rev: rev });
+      reply.code(201).header('etag', etag(rev));
+      if (!perms.has('read')) return { path: ctx.toApi(target), rev };
+      return noteJson(ctx, target, data.toString('utf8'));
+    });
   });
 
   app.patch('/v1/notes/*', { schema: doc({ summary: 'Edit frontmatter, sections or text in place', tag: 'Notes', url: '/v1/notes/{path}', query: NoteQuery, body: PatchBodySchema }) }, async (req, reply) => {
