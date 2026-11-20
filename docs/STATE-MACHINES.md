@@ -236,7 +236,7 @@ retries get 404 once the first one went through. `POST /v1/notes` with the defau
 
 ## M7. Move protocol (two steps on disk)
 
-**Lives in** `src/vault.ts:143-157` (`Vault.move`), called by `moveFile` under the lock.
+**Lives in** `src/vault.ts:139-164` (`Vault.move`), called by `moveFile` under the write lock (M5).
 
 **States** for a move A → B: **Src** (only A), **Both** (A and B are hard links of one inode),
 **Dst** (only B).
@@ -248,20 +248,20 @@ retries get 404 once the first one went through. `POST /v1/notes` with the defau
 
 | From | Event | To | Guard | Code |
 | --- | --- | --- | --- | --- |
-| Src | `link(A, B)` | Both | B absent | `vault.ts:146` |
-| Both | `unlink(A)` | Dst | | `vault.ts:147` |
-| Src | `link` fails `EPERM`/`ENOTSUP`/`EXDEV` | Dst via check-then-`rename` | B absent at check | `vault.ts:150-153` |
-| Src | `link` fails `EEXIST` | Src, 409 | | `vault.ts:149` |
-| **Both** | **`unlink(A)` fails** | **Both, error** | | `vault.ts:148-150` (**B7**) |
-| Dst | index refresh of A and B | | | `vault.ts:155-156` |
+| Src | `link(A, B)` | Both | B absent | `vault.ts:143` |
+| Both | `unlink(A)` | Dst | | `vault.ts:151` |
+| Both | `unlink(A)` fails | Src (B unlinked again), error | | `vault.ts:152-155` |
+| Src | `link` fails `EPERM`/`ENOTSUP`/`EXDEV` | Dst via check-then-`rename` | B absent at check | `vault.ts:146-147, 157-160` |
+| Src | `link` fails `EEXIST` | Src, 409 | | `vault.ts:145` |
+| Dst | index refresh of A and B | | | `vault.ts:162-163` |
 
-**Reachable invalid states.**
-- **B7** (breaks I7.2): `link` and `unlink` share one `try`. If `unlink(A)` fails, the file stays at
-  both paths and the index doesn't know B. With `EACCES` the client gets 500; with `EPERM` the
-  error falls into the "no hard links" branch, which sees B (just linked) and answers 409
-  `already_exists`, blaming a destination the request itself created. A retry then fails with 409
-  for as long as the stray link exists.
-- A crash between `link` and `unlink` also leaves Both. That can't be prevented without a journal;
+**Invalid states.**
+- **B7** (broke I7.2, fixed by I5): `link` and `unlink` shared one `try`. If `unlink(A)` failed, the
+  file stayed at both paths and the index didn't know B. With `EACCES` the client got 500; with
+  `EPERM` the error fell into the "no hard links" branch, which saw B (just linked) and answered 409
+  `already_exists`, blaming a destination the request itself had created. A retry then failed
+  with 409 for as long as the stray link existed.
+- A crash between `link` and `unlink` still leaves Both. That can't be prevented without a journal;
   see U2.
 
 ---
@@ -411,7 +411,7 @@ file and the second rename winning.
 | B4 | M1, M2 | security | A config edit that also touches a restart-only setting is ignored entirely, so a token revoked in it stays valid until restart | `test/sm-config-reload.test.ts` | fixed (I3) |
 | B5 | M2, M11 | security | `token revoke` after a concurrent edit deletes the wrong token; the one asked for stays valid | `test/sm-cli-tokens.test.ts` "B5 …" (another revoke lands between load and edit) | fixed (I4) |
 | B6 | M2, M11 | wrong user-visible state | Concurrent `token create` + another edit: the printed token is not in the file | `test/sm-cli-tokens.test.ts` "B6 …" (child CLI process vs. a writer holding the file) | fixed (I4) |
-| B7 | M7 | wrong user-visible state (duplicate file) | `unlink` of the source fails after `link`: the file exists at both paths; with EPERM the API answers 409 for its own link; retries keep failing | `test/sm-move-fault.test.ts` (injects EACCES / EPERM on unlink) | open |
+| B7 | M7 | wrong user-visible state (duplicate file) | `unlink` of the source fails after `link`: the file exists at both paths; with EPERM the API answers 409 for its own link; retries keep failing | `test/sm-move-fault.test.ts` (injects EACCES / EPERM on unlink) | fixed (I5) |
 | B8 | M9 | wrong user-visible state | A refresh racing a folder removal leaves a ghost index entry under a missing folder | `test/sm-index-race.test.ts` (parks `VaultIndex.load`) | open |
 | B9 | M6 | wrong user-visible state | The audit write fails after the change: 500 for a change that happened; a retried `POST /v1/notes` creates `Title 1.md` | scratch reproduction (audit folder made read-only): first POST 500, retry 201 `Research/Retry me 1.md`, both files on disk | not fixed (D3) |
 
@@ -462,14 +462,15 @@ Grouped fixes, in priority order. One commit each, each with the regression test
 - **Fix:** `editConfig` takes `.<config>.lock` (`O_EXCL`, holds the pid; waits up to 10 s; takes over
   a dead holder's lock) around read → edit → validate → rename. `revoke` finds the token by name and
   `create` picks its default name in the document being edited.
-- **Commit:** COMMIT_I4
+- **Commit:** `3ba3809`
 - **Test:** `test/sm-cli-tokens.test.ts`
 
 ### I5. Undo the link when a move's unlink fails
 - **Bugs:** B7.
 - **Impact:** wrong user-visible state (duplicate file, failing retries).
-- **Fix:** —
-- **Commit:** —
+- **Fix:** only the `link` is in the `try` that picks the no-hard-links fallback; if the following
+  `unlink(A)` fails, `move` unlinks B again and rethrows.
+- **Commit:** COMMIT_I5
 - **Test:** `test/sm-move-fault.test.ts`
 
 ### I6. Don't index a path whose parent is gone

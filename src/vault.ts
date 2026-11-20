@@ -138,12 +138,23 @@ export class Vault {
   /** Moves a file without overwriting the destination. Keeps the inode (and birth time). */
   async move(from: Segs, to: Segs): Promise<void> {
     await mkdir(path.dirname(this.abs(to)), { recursive: true });
+    let linked = true;
     try {
       await link(this.abs(from), this.abs(to));
-      await unlink(this.abs(from));
     } catch (e) {
       if (errno(e) === 'EEXIST') throw alreadyExists(join(to));
       if (errno(e) !== 'EPERM' && errno(e) !== 'ENOTSUP' && errno(e) !== 'EXDEV') throw e;
+      linked = false;
+    }
+    if (linked) {
+      try {
+        await unlink(this.abs(from));
+      } catch (e) {
+        // Don't leave the file under both names: drop the new one, so a retry starts clean.
+        await unlink(this.abs(to)).catch(() => {});
+        throw e;
+      }
+    } else {
       // Filesystems without hard links: check, then rename.
       if ((await this.kindOf(to)) !== null) throw alreadyExists(join(to));
       await rename(this.abs(from), this.abs(to));
