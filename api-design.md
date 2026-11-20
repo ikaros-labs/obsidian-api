@@ -50,7 +50,7 @@ A self-hosted REST server over a folder of markdown files (an Obsidian vault or 
   { "error": { "code": "rev_mismatch", "message": "…", "request_id": "…", "details": { "current_rev": "…" } } }
   ```
   A `not_found` for a path can carry `details.did_you_mean`: up to three visible paths close to the one asked for (without `1. `-style prefixes, case or `.md`; the same name elsewhere; a near-miss spelling). Only paths the account can see are candidates, so the response for a hidden path is the same as for a missing one.
-  The codes are `unauthorized`, `not_found`, `forbidden`, `already_exists`, `rev_mismatch`, `invalid_path`, `invalid_request`, `patch_target_not_found`, `patch_target_ambiguous`, `folder_not_empty`, `payload_too_large` and `rate_limited`.
+  The codes are `unauthorized`, `not_found`, `forbidden`, `already_exists`, `rev_mismatch`, `invalid_path`, `invalid_request`, `patch_target_not_found`, `patch_target_ambiguous`, `folder_not_empty`, `payload_too_large`, `rate_limited` and `audit_unavailable` (500: the audit log can't be written, so the write was refused and nothing changed; safe to retry).
 
 ---
 
@@ -311,7 +311,7 @@ vault:
     - Templates
 
 audit:
-  path: /var/lib/spall/audit.jsonl   # one line per write: time, account, token, op, path, old/new rev
+  path: /var/lib/spall/audit.jsonl   # two lines per write: intent (before) and result (after)
 
 defaults:
   rate_limit: 120/min
@@ -353,6 +353,11 @@ accounts:
   - The config stores only a SHA-256 hash of each token. Because the tokens are high-entropy, a slow hash like bcrypt isn't needed.
   - An account can have several tokens, so you can rotate one without downtime.
   - Expired tokens return 401. A date-only `expires` (e.g. `2027-10-01`) takes effect at 00:00 UTC on that day.
+- **Audit log.** With `audit.path` set, each write appends two JSON lines that share `request` (the request id that error envelopes carry as `request_id`) and `op`:
+  - **intent**, before the vault is touched: `phase: "intent"`, `time`, `account`, `token`, `path`, `via` for MCP tool calls, and what is known beforehand (`old_rev`, `new_rev`, `destination`, `ops`, `recursive`). If it can't be appended, the write is refused with 500 `audit_unavailable` and nothing changes.
+  - **result**, after the change: `phase: "result"`, `outcome: "ok"` plus what is known only afterwards (`trash` for deletes, `path` for `POST /v1/notes`), or `outcome: "failed"` and `error` (an API code such as `already_exists`, `move_incomplete`, or an errno such as `ENOSPC`). If it can't be appended, the client still gets the real outcome and the server logs an error.
+
+  Requests rejected before the intent (auth, permissions, `If-Match`) aren't logged. An intent without a result means the outcome is unknown (the result line was lost or the server stopped); the vault shows what happened.
 
 ### CLI
 ```

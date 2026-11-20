@@ -1,77 +1,39 @@
 import { appendFile, link, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ApiError, alreadyExists, notFound } from './errors.js';
-import { hasDotSegment, join, type Segs } from './paths.js';
-import type { VaultIndex } from './vault-index.js';
+import { hasDotSegment, join, split, type Segs } from './paths.js';
+import { revOf, type VaultIndex } from './vault-index.js';
 
 const errno = (e: unknown) => (e as NodeJS.ErrnoException).code;
 
 /** Numbered names `freePath` tries before giving up. */
 const MAX_RENAME_PROBES = 10_000;
 
-const under = (key: string, tree: string) => key === tree || key.startsWith(`${tree}/`);
-
 /**
- * Per-key async mutex. `runTree` also holds off everything below its key, for an operation that
- * checks a folder's contents and then acts on the folder as a whole.
+ * One lock for every API write. Writes are a few local file operations, so running them one at a
+ * time is cheap, and it rules out every interleaving between them: two names for one file (case,
+ * symlinks), a folder delete and a write inside the folder, two moves picking the same free name.
  */
-class Locks {
-  private tails = new Map<string, Promise<void>>();
-  /** Subtrees held by `runTree`, each with a promise that settles when it is released. */
-  private trees = new Map<string, Promise<void>>();
+class WriteLock {
+  private tail: Promise<unknown> = Promise.resolve();
 
-  async run<T>(keys: string[], fn: () => Promise<T>, tree?: string): Promise<T> {
-    const sorted = [...new Set(keys.map((k) => k.toLowerCase()))].sort();
-    // Wait until no held subtree covers a key. No await follows before the keys are queued below, so
-    // a subtree can't be taken in between.
-    for (;;) {
-      const held = [...this.trees].find(([t]) => t !== tree && sorted.some((k) => under(k, t)));
-      if (!held) break;
-      await held[1];
-    }
-    const releases: (() => void)[] = [];
-    for (const key of sorted) {
-      const prev = this.tails.get(key) ?? Promise.resolve();
-      let release!: () => void;
-      const mine = new Promise<void>((r) => (release = r));
-      const tail = prev.then(() => mine);
-      this.tails.set(key, tail);
-      releases.push(() => {
-        release();
-        if (this.tails.get(key) === tail) this.tails.delete(key);
-      });
-      await prev;
-    }
-    try {
-      return await fn();
-    } finally {
-      releases.reverse().forEach((r) => r());
-    }
+  run<T>(fn: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(fn);
+    this.tail = result.catch(() => {});
+    return result;
   }
+}
 
-  /**
-   * Runs `fn` with `key` and everything below it locked: operations below that are already queued
-   * or running finish first, later ones wait until `fn` is done.
-   */
-  async runTree<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    const tree = key.toLowerCase();
-    let release!: () => void;
-    // Announced before queueing on the key itself, so nothing new starts below while waiting for it.
-    while (this.trees.has(tree)) await this.trees.get(tree);
-    this.trees.set(tree, new Promise<void>((r) => (release = r)));
-    try {
-      return await this.run([key], async () => {
-        for (;;) {
-          const busy = [...this.tails].filter(([k]) => k !== tree && under(k, tree)).map(([, tail]) => tail);
-          if (busy.length === 0) break;
-          await Promise.all(busy);
-        }
-        return fn();
-      }, tree);
-    } finally {
-      this.trees.delete(tree);
-      release();
-    }
+/** A move that linked the destination but could remove neither the source nor the new link. */
+export class PartialMoveError extends Error {
+  /** The error code in the audit log's result line. */
+  readonly code = 'move_incomplete';
+  constructor(
+    readonly from: Segs,
+    readonly to: Segs,
+    readonly reason: unknown,
+  ) {
+    super(`Moved ${join(from)} to ${join(to)} but could not remove either name`);
   }
 }
 
@@ -80,13 +42,28 @@ class Locks {
  * path really points inside the vault and keeps the index in sync.
  */
 export class Vault {
-  readonly locks = new Locks();
+  private readonly writes = new WriteLock();
+  /** Journal of in-place overwrites (see `overwrite`); a dot-folder, so never indexed or served. */
+  private readonly journal: string;
+  private journalSeq = 0;
+  /** An overwrite failed and couldn't be undone yet: recover before the next write. */
+  private recoveryPending = false;
 
   constructor(
     readonly root: string,
     readonly index: VaultIndex,
     private readonly opts: { followSymlinks: boolean; trash: string[] | null },
-  ) {}
+  ) {
+    this.journal = path.join(root, '.spall', 'journal');
+  }
+
+  /** Runs `fn` under the vault-wide write lock, after finishing any overwrite that failed earlier. */
+  exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    return this.writes.run(async () => {
+      if (this.recoveryPending) await this.recover();
+      return fn();
+    });
+  }
 
   abs(segs: Segs): string {
     return path.join(this.root, ...segs);
@@ -158,19 +135,100 @@ export class Vault {
     }
     try {
       await fh.writeFile(data);
-    } finally {
-      await fh.close();
+    } catch (e) {
+      // We made the file: don't leave a partial one behind.
+      await fh.close().catch(() => {});
+      await unlink(this.abs(segs)).catch(() => {});
+      throw e;
     }
+    await fh.close();
     await this.refreshChain(segs);
   }
 
   /**
    * Overwrites an existing file in place. Rename-over-temp would be atomic, but it gives the file a
-   * new inode and so a new birth time, which is what `created` is based on.
+   * new inode and so a new birth time, which is what `created` is based on. Instead the old bytes
+   * go to the journal first (synced), so a write that fails or a crash midway can always be undone:
+   * at once if possible, otherwise by `recover()` before the next write or at the next start.
    */
   async overwrite(segs: Segs, data: string | Buffer): Promise<void> {
-    await writeFile(this.abs(segs), data);
+    const file = this.abs(segs);
+    const old = await readFile(file);
+    const id = `${Date.now()}-${process.pid}-${this.journalSeq++}`;
+    await this.journalWrite(id, segs, old, revOf(data));
+    try {
+      await writeFile(file, data);
+    } catch (e) {
+      if (await writeFile(file, old).then(() => true, () => false)) await this.journalDrop(id);
+      else this.recoveryPending = true;
+      await this.index.refresh(join(segs));
+      throw e;
+    }
+    await this.journalDrop(id);
     await this.index.refresh(join(segs));
+  }
+
+  private async journalWrite(id: string, segs: Segs, old: Buffer, newRev: string): Promise<void> {
+    await mkdir(this.journal, { recursive: true });
+    const base = path.join(this.journal, id);
+    try {
+      await writeSynced(`${base}.old`, old);
+      // The record is what makes the entry count: written last, and atomically.
+      await writeSynced(`${base}.tmp`, JSON.stringify({ path: join(segs), new_rev: newRev }));
+      await rename(`${base}.tmp`, `${base}.json`);
+    } catch (e) {
+      await this.journalDrop(id);
+      throw e;
+    }
+  }
+
+  private async journalDrop(id: string): Promise<void> {
+    const base = path.join(this.journal, id);
+    await rm(`${base}.json`, { force: true });
+    await rm(`${base}.tmp`, { force: true });
+    await rm(`${base}.old`, { force: true });
+  }
+
+  /**
+   * Finishes overwrites that failed or were cut short: a file that doesn't hold the new bytes gets
+   * its old bytes back. Returns the vault paths restored. Entries it can't finish stay for next time.
+   */
+  async recover(): Promise<string[]> {
+    let names: string[];
+    try {
+      names = await readdir(this.journal);
+    } catch (e) {
+      if (errno(e) === 'ENOENT') return [];
+      throw e;
+    }
+    const restored: string[] = [];
+    let failed = false;
+    for (const id of new Set(names.map((n) => n.replace(/\.(json|old|tmp)$/, '')))) {
+      const base = path.join(this.journal, id);
+      let record: { path: string; new_rev: string } | null = null;
+      try {
+        record = JSON.parse(await readFile(`${base}.json`, 'utf8'));
+      } catch {
+        // No record: the in-place write never started.
+      }
+      if (record) {
+        try {
+          const segs = split(record.path);
+          const current = await readFile(this.abs(segs)).catch((e) => (errno(e) === 'ENOENT' ? null : Promise.reject(e)));
+          if (current !== null && revOf(current) !== record.new_rev) {
+            await writeFile(this.abs(segs), await readFile(`${base}.old`));
+            restored.push(record.path);
+            await this.index.refresh(record.path);
+          }
+        } catch {
+          failed = true;
+          continue;
+        }
+      }
+      await this.journalDrop(id);
+    }
+    this.recoveryPending = failed;
+    return restored;
   }
 
   async mkdir(segs: Segs): Promise<void> {
@@ -187,18 +245,46 @@ export class Vault {
   /** Moves a file without overwriting the destination. Keeps the inode (and birth time). */
   async move(from: Segs, to: Segs): Promise<void> {
     await mkdir(path.dirname(this.abs(to)), { recursive: true });
+    let linked = true;
     try {
       await link(this.abs(from), this.abs(to));
-      await unlink(this.abs(from));
     } catch (e) {
       if (errno(e) === 'EEXIST') throw alreadyExists(join(to));
       if (errno(e) !== 'EPERM' && errno(e) !== 'ENOTSUP' && errno(e) !== 'EXDEV') throw e;
+      linked = false;
+    }
+    if (linked) {
+      try {
+        await unlink(this.abs(from));
+      } catch (e) {
+        // Don't leave the file under both names: drop the new one, so a retry starts clean. Only if
+        // it is still our link: something else may have replaced it meanwhile.
+        if (!(await this.unlinkIfSameFile(to, from))) {
+          await this.index.refresh(join(from));
+          await this.refreshChain(to);
+          throw new PartialMoveError(from, to, e);
+        }
+        throw e;
+      }
+    } else {
       // Filesystems without hard links: check, then rename.
       if ((await this.kindOf(to)) !== null) throw alreadyExists(join(to));
       await rename(this.abs(from), this.abs(to));
     }
     await this.index.refresh(join(from));
     await this.refreshChain(to);
+  }
+
+  /** Unlinks `p` if it is the same file (inode) as `other`. False if that failed; true otherwise. */
+  private async unlinkIfSameFile(p: Segs, other: Segs): Promise<boolean> {
+    try {
+      const [a, b] = await Promise.all([lstat(this.abs(p)), lstat(this.abs(other))]);
+      if (a.ino !== b.ino || a.dev !== b.dev) return true;
+      await unlink(this.abs(p));
+      return true;
+    } catch (e) {
+      return errno(e) === 'ENOENT';
+    }
   }
 
   /** Moves a file or folder into the trash, keeping its relative path. */
@@ -251,6 +337,16 @@ export class Vault {
   /** Re-indexes a new path; the index adds any parent folders created on the way. */
   private async refreshChain(segs: Segs): Promise<void> {
     await this.index.refresh(join(segs));
+  }
+}
+
+async function writeSynced(file: string, data: string | Buffer): Promise<void> {
+  const fh = await open(file, 'w');
+  try {
+    await fh.writeFile(data);
+    await fh.sync();
+  } finally {
+    await fh.close();
   }
 }
 

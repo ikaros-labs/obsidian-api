@@ -10,12 +10,21 @@ Security fixes from the 2026-11-20 audit.
 - **Fix: hidden folders could be told from missing ones.** `<folder>/<300 characters>` answered 500 when the folder existed. Path segments over 255 bytes are now a 400, and a path an account has no permissions on is not looked up on disk.
 - **Fix: `on_conflict: rename` only picks names the account may create.** It skipped a denied `Name 1` that existed and wrote to it when it did not.
 - **Fix: with `follow_symlinks`, `POST /v1/notes`, `POST /v1/folders` and recursive folder delete check the path as requested and the symlink target**, like every other route.
-- **Fix: recursive folder delete could trash a note written into the folder while it ran.** It now holds the whole folder until it is done.
-- **Fix: a reload always applies token and grant changes.** A pending change to `server` or `vault` settings no longer makes the whole reload fail (those settings still need a restart, and the log says so), and a config path that is a symlink is followed again when it is re-pointed.
+- **Fix: a config path that is a symlink is followed again at every reload.** Re-pointing the link at a file without a token used to leave that token valid until a restart.
 - **Fix: a token `expires` that is not a real date (`2027-13-01`) is a config error.** It used to mean "never expires".
 - **Fix: a Bases query held open across a reload no longer keeps the account's old access** in the query cache.
 - **Fix: more of what the MCP tools return is fenced**: frontmatter keys, block ids, a base's view names, filters and column names, Bases diagnostics, and error details. A frontmatter object such as `{type: Error, value: …}` is plain data in Bases.
 - **Fix: `/v1/stats?tz=` no longer keeps a formatter for every spelling of a time zone.**
+
+State-machine fixes.
+
+- **Fix: a recursive folder delete could remove a file written after its permission check.** Writes now run one at a time under a vault-wide lock, so another account's note created inside the folder while the delete ran is no longer purged or trashed by an account that can't see it. The same lock stops two edits of one note through a symlink alias (with `follow_symlinks`) from losing one of them.
+- **Fix: a failed or interrupted overwrite no longer leaves a partial note or file.** Before replacing a file in place (which keeps its creation time), Spall saves the old bytes to a journal in `.spall/journal` in the vault. If the write fails, the old content is put back at once. If that fails too, or the server stops midway, it is put back before the next write or at the next start. A retry with the `If-Match` from before the failure then applies. A new file whose write fails is removed instead of left partial.
+- **Config reloads apply everything except restart-only settings.** An edit that changed `server.*`, `vault.path`, `vault.trash` or `vault.follow_symlinks` used to be rejected as a whole, so a token revoked in it (or in any later edit) stayed valid until a restart. Now those settings keep their running values, an error says they need a restart, and everything else (accounts, grants, tokens) applies at once.
+- **Fix: `spall token revoke` could revoke the wrong token,** and concurrent `spall token` runs could lose a created token. Edits now take a `.<config>.lock` file next to the config, and the token is looked up by name in the file being edited.
+- **Fix: a move whose source couldn't be removed left the file under both names** (and could answer 409 for its own destination). The new name is removed again and the error is returned, so a retry starts clean.
+- **Fix: a write whose audit line failed returned 500 although it had happened,** so a retried `POST /v1/notes` made a duplicate note. **The audit log format changes:** each write now logs two lines with the same `request` id. An `intent` line (account, token, op, path, revs) is written before the vault is touched, and a `result` line (`outcome: ok`, or `failed` with an `error` code) after. If the intent can't be written, the write is refused with 500 `audit_unavailable` and nothing changes, so a retry is safe. If only the result can't be written, the client gets the real outcome and the server logs an error. A move that leaves the file at both paths is now logged as a failed `move` with `error: move_incomplete`. Tools that read the audit log should join the two lines on `request`; an intent with no result means the outcome is unknown.
+- **Fix: a deleted folder could leave a ghost entry** in search, tags, bases and backlinks when a file inside it was being re-indexed at the same moment.
 
 ## 1.2.3 — 2026-11-19
 

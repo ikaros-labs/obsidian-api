@@ -188,10 +188,12 @@ describe('PUT note', () => {
     expect(res.statusCode).toBe(415);
   });
 
-  it('writes an audit log line', async () => {
+  it('writes an intent and a result line to the audit log', async () => {
     await env.req('agent', { method: 'PUT', url: note('Research/A'), headers: { 'content-type': 'text/markdown' }, payload: 'x' });
     const lines = readFileSync(env.auditPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-    expect(lines.at(-1)).toMatchObject({ account: 'agent', token: 'test', op: 'create', path: 'Research/A.md', new_rev: expect.any(String) });
+    const [intent, result] = lines.slice(-2);
+    expect(intent).toMatchObject({ phase: 'intent', request: expect.any(String), account: 'agent', token: 'test', op: 'create', path: 'Research/A.md', new_rev: expect.any(String) });
+    expect(result).toEqual({ time: expect.any(String), phase: 'result', request: intent.request, op: 'create', outcome: 'ok' });
   });
 });
 

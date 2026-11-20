@@ -282,7 +282,7 @@ vault:
   follow_symlinks: false   # default; when true, the target is checked again
   exclude: [Private]       # denied for every account
 audit:
-  path: /var/lib/spall/audit.jsonl   # optional: one JSON line per write
+  path: /var/lib/spall/audit.jsonl   # optional: two JSON lines per write (intent, result)
 defaults:
   rate_limit: 120/min      # per account; sec, min or hour
 mcp:
@@ -374,7 +374,11 @@ Notes/Private/diary.md → none (key: Notes/Private)
 - **Bind to localhost or a tailnet**, not the open internet. Spall speaks plain HTTP; put a TLS proxy in front if it must leave the machine.
 - **Tokens** are 256-bit random values. Only their SHA-256 is stored; they can expire, and an account can have several for rotation.
 - **Deletes go to the trash** (`vault.trash`) unless the account has `purge` and asks for `permanent=true`.
-- **Turn on the audit log** (`audit.path`, also outside the vault) to get one line per write: time, account, token, operation, path and revisions.
+- **Turn on the audit log** (`audit.path`, also outside the vault) to get two JSON lines per write, joined by the request id. The **intent** line is written before the vault is touched. It holds the time, account, token, operation, path and revisions. The **result** line comes after the change, with `outcome: ok` or `outcome: failed` and an error code. If the intent can't be written, the write is refused with `500 audit_unavailable` and nothing changes, so no change goes unlogged. If only the result line is lost, the client still gets the real outcome and the server logs an error. An intent with no result means the outcome is unknown; check the vault.
+  ```json
+  {"time":"…","request":"3f1c…","op":"patch","phase":"intent","account":"agent","token":"laptop","path":"Research/Plan.md","old_rev":"sha256:…","new_rev":"sha256:…","ops":["append"]}
+  {"time":"…","request":"3f1c…","op":"patch","phase":"result","outcome":"ok"}
+  ```
 - **What a scope doesn't hide:** a readable note's text can mention hidden notes by name; Spall doesn't redact note bodies.
 
 Found a vulnerability? See [SECURITY.md](SECURITY.md).

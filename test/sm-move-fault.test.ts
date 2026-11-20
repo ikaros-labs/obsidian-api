@@ -1,0 +1,91 @@
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+/**
+ * A move is link(to) then unlink(from). These tests fail the second step and check that the vault
+ * is left in a state the client can retry from. See B7 in docs/STATE-MACHINES.md.
+ */
+
+const hooks = vi.hoisted(() => ({ unlinkError: null as null | ((p: string) => NodeJS.ErrnoException | null) }));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const fs = await importOriginal<typeof import('node:fs/promises')>();
+  const unlink = (async (p: Parameters<typeof fs.unlink>[0]) => {
+    const err = typeof p === 'string' ? hooks.unlinkError?.(p) : null;
+    if (err) throw err;
+    return fs.unlink(p);
+  }) as typeof fs.unlink;
+  return { ...fs, default: { ...fs, unlink }, unlink };
+});
+
+const { setup } = await import('./helpers.js');
+type Env = Awaited<ReturnType<typeof setup>>;
+
+let env: Env;
+afterEach(async () => {
+  hooks.unlinkError = null;
+  await env?.cleanup();
+});
+
+const errnoError = (code: string) => Object.assign(new Error(`${code}: injected`), { code });
+
+describe('B7 move whose unlink of the source fails', () => {
+  for (const code of ['EACCES', 'EPERM']) {
+    it(`leaves only the source on ${code}, and a retry succeeds`, async () => {
+      env = await setup();
+      const from = path.join(env.vault, 'Research/Plan.md');
+      const to = path.join(env.vault, 'Research/Moved.md');
+      const original = readFileSync(from, 'utf8');
+      hooks.unlinkError = (p) => (p === from ? errnoError(code) : null);
+      const move = () => env.req('admin', { method: 'POST', url: '/v1/notes/Research/Plan/move', payload: { destination: 'Research/Moved' } });
+
+      const first = await move();
+      expect(first.statusCode).toBe(500);
+      // No half-done move: the destination link was rolled back.
+      expect(existsSync(to)).toBe(false);
+      expect(readFileSync(from, 'utf8')).toBe(original);
+      expect(env.app.index.get('Research/Moved.md')).toBeUndefined();
+
+      hooks.unlinkError = null;
+      const retry = await move();
+      expect(retry.statusCode).toBe(200);
+      expect(existsSync(from)).toBe(false);
+      expect(readFileSync(to, 'utf8')).toBe(original);
+    });
+  }
+});
+
+describe('B11 move whose rollback fails too, or whose destination changed meanwhile', () => {
+  it('reports that the file is now at both paths, and indexes both', async () => {
+    env = await setup();
+    const from = path.join(env.vault, 'Research/Plan.md');
+    const to = path.join(env.vault, 'Research/Moved.md');
+    hooks.unlinkError = (p) => (p === from || p === to ? errnoError('EACCES') : null);
+    const r = await env.req('admin', { method: 'POST', url: '/v1/notes/Research/Plan/move', payload: { destination: 'Research/Moved' } });
+    expect(r.statusCode).toBe(500);
+    expect(r.json().error).toMatchObject({ message: expect.stringMatching(/both paths/), details: { path: 'Research/Plan.md', destination: 'Research/Moved.md' } });
+    expect(existsSync(from) && existsSync(to)).toBe(true);
+    expect(env.app.index.get('Research/Plan.md')).toBeDefined();
+    expect(env.app.index.get('Research/Moved.md')).toBeDefined();
+    const [intent, result] = readFileSync(env.auditPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(intent).toMatchObject({ phase: 'intent', op: 'move', path: 'Research/Plan.md', destination: 'Research/Moved.md' });
+    expect(result).toMatchObject({ phase: 'result', request: intent.request, outcome: 'failed', error: 'move_incomplete' });
+  });
+
+  it('does not remove a destination that something else replaced meanwhile', async () => {
+    env = await setup();
+    const from = path.join(env.vault, 'Research/Plan.md');
+    const to = path.join(env.vault, 'Research/Moved.md');
+    hooks.unlinkError = (p) => {
+      if (p !== from) return null;
+      // Another writer (sync, the app) replaces the new name before we roll back.
+      unlinkSync(to);
+      writeFileSync(to, 'someone else');
+      return errnoError('EACCES');
+    };
+    const r = await env.req('admin', { method: 'POST', url: '/v1/notes/Research/Plan/move', payload: { destination: 'Research/Moved' } });
+    expect(r.statusCode).toBe(500);
+    expect(readFileSync(to, 'utf8')).toBe('someone else');
+    expect(existsSync(from)).toBe(true);
+  });
+});
