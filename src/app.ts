@@ -9,6 +9,7 @@ import { VaultIndex } from './vault-index.js';
 export interface App {
   server: FastifyInstance;
   index: VaultIndex;
+  vault: Vault;
   search: SearchIndex;
   close(): Promise<void>;
 }
@@ -20,9 +21,11 @@ export async function createApp(
 ): Promise<App> {
   const cfg = configs.current;
   const index = new VaultIndex(cfg.vaultPath, { followSymlinks: cfg.followSymlinks });
+  const vault = new Vault(cfg.vaultPath, index, { followSymlinks: cfg.followSymlinks, trash: cfg.trash });
+  // Undo overwrites a crash or a failing disk left half-done, before anything reads the vault.
+  const restored = await vault.recover();
   await index.build();
   if (opts.watch) await index.watch((e) => server.log.error(e));
-  const vault = new Vault(cfg.vaultPath, index, { followSymlinks: cfg.followSymlinks, trash: cfg.trash });
   const search = new SearchIndex(index, (e) => vault.read(e.real ?? e.segs));
   const server = buildServer(
     { config: () => configs.current, index, vault, audit: new AuditLog(() => configs.current.auditPath),
@@ -32,11 +35,13 @@ export async function createApp(
     },
     { logger: opts.logger },
   );
+  if (restored.length > 0) server.log.warn(`Restored the previous content of ${restored.length} file(s) after an interrupted write: ${restored.join(', ')}`);
   // Warm the search index in the background; queries wait for it if it's not done yet.
   search.sync().catch((e) => server.log.error(e));
   return {
     server,
     index,
+    vault,
     search,
     async close() {
       await server.close();

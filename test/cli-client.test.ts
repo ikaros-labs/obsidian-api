@@ -222,8 +222,8 @@ describe('spall mcp (stdio)', () => {
     const r = (await agent.callTool({ name: 'spall_edit', arguments: { path: 'Research/inbox/Draft', ops: [{ op: 'append', content: 'stdio' }] } })) as { isError?: boolean };
     await agent.close();
     expect(r.isError).toBeFalsy();
-    const last = JSON.parse(readFileSync(env.auditPath, 'utf8').trim().split('\n').at(-1)!);
-    expect(last).toMatchObject({ account: 'agent', op: 'patch', path: 'Research/inbox/Draft.md' });
+    const last = JSON.parse(readFileSync(env.auditPath, 'utf8').trim().split('\n').at(-2)!);
+    expect(last).toMatchObject({ phase: 'intent', account: 'agent', op: 'patch', path: 'Research/inbox/Draft.md' });
     expect(last).not.toHaveProperty('via');
   }, 30_000);
 });
