@@ -22,8 +22,6 @@ export function dateIn(ms: number, timeZone: string): string {
 }
 const MAX_FORMATTERS = 32;
 const formatters = new Map<string, Intl.DateTimeFormat>();
-/** For tests. */
-export const cachedFormatters = (): number => formatters.size;
 
 const toUtc = (date: string) => Date.parse(`${date}T00:00:00Z`);
 const fromUtc = (ms: number) => new Date(ms).toISOString().slice(0, 10);
