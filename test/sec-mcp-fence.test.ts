@@ -1,3 +1,5 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { setup, type TestEnv } from './helpers.js';
 import { callTool, mcpClient } from './mcp-helpers.js';
@@ -72,5 +74,36 @@ describe('vault text reaches the model only inside the fence', () => {
       expect(outside(r.text)).not.toContain('vfy9-marker');
     }
     await vic.close();
+  });
+
+  // Review round: what an invalid base says about itself (YAML error, key names) is vault text.
+  it('F-17: an invalid base is reported without its text outside the fence', async () => {
+    const vic = await start();
+    mkdirSync(path.join(env.vault, 'Research/inbox'), { recursive: true });
+    writeFileSync(path.join(env.vault, 'Research/inbox/bad-yaml.base'), `views: [1, 2 ${M}\nother: x\n`);
+    writeFileSync(path.join(env.vault, 'Research/inbox/bad-shape.base'), `properties:\n  "COL ${M}": 5\n`);
+    for (const base of ['bad-yaml', 'bad-shape']) {
+      const rest = await env.req('vic', { method: 'GET', url: `/v1/bases/Research/inbox/${base}.base` });
+      expect(rest.statusCode).toBe(422);
+      expect(rest.json().error.message).not.toContain('vfy9-marker');
+      expect(JSON.stringify(rest.json().error.details)).toContain('vfy9-marker');
+      const r = await callTool(vic, 'spall_query_base', { base: `Research/inbox/${base}.base` });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('vfy9-marker');
+      expect(outside(r.text)).not.toContain('vfy9-marker');
+      expect(outside(r.text)).toMatch(/^invalid_base: /);
+    }
+    await vic.close();
+  });
+
+  // Review round: the frontmatter itself is the map of properties, whatever its keys are called.
+  it('F-07: top-level `type` and `value` keys are two ordinary properties', async () => {
+    await start();
+    const put = await env.req('drop', { method: 'PUT', url: '/v1/notes/top.md', payload: `---\ntype: Error\nvalue:\n  message: "C1 ${M}"\nother: 7\n---\nx\n`, headers: md });
+    expect(put.statusCode).toBe(201);
+    const res = await env.req('vic', { method: 'POST', url: '/v1/query', payload: { from: ['Research/inbox'], filters: 'other == 7', select: ['type', 'value', 'other'] } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().diagnostics).toEqual([]);
+    expect(res.json().results.map((r: { values: unknown }) => r.values)).toEqual([{ type: 'Error', value: { message: `C1 ${M}` }, other: 7 }]);
   });
 });

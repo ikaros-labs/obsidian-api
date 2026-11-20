@@ -30,7 +30,8 @@ export function errorResult(e: ToolError, opts: { fence: boolean }): CallToolRes
   const error = { code: e.code, message: e.message, ...(e.details ? { details: e.details } : {}) };
   let details = e.details ? `\n${JSON.stringify(e.details)}` : '';
   if (opts.fence && e.details) {
-    const [plain, note] = split(e.details, PLAIN_DETAILS);
+    // An invalid base is described in the file's own words (its keys, its YAML): nothing is plain.
+    const [plain, note] = split(e.details, e.code === 'invalid_base' ? [] : PLAIN_DETAILS);
     details = `${Object.keys(plain).length > 0 ? `\n${JSON.stringify(plain)}` : ''}${Object.keys(note).length > 0 ? `\n${fence(JSON.stringify(note), {})}` : ''}`;
   }
   const content: CallToolResult['content'] = [{ type: 'text', text: `${e.code}: ${e.message}${details}` }];

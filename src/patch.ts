@@ -49,6 +49,9 @@ const targetNotFound = (what: string) => new ApiError(422, 'patch_target_not_fou
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
+/** A key's own value: frontmatter keys are data, so `constructor` or `__proto__` never mean what objects inherit. */
+const own = (o: Record<string, unknown>, k: string): unknown => (Object.hasOwn(o, k) ? o[k] : undefined);
+
 /** Lists concatenate (skipping primitives already present), objects merge, anything else is replaced. */
 export function mergeValue(current: unknown, incoming: unknown): unknown {
   if (Array.isArray(current) && Array.isArray(incoming)) {
@@ -56,9 +59,11 @@ export function mergeValue(current: unknown, incoming: unknown): unknown {
     return [...current, ...incoming.filter((x) => !(isPrimitive(x) && current.includes(x)))];
   }
   if (isPlainObject(current) && isPlainObject(incoming)) {
-    const out: Record<string, unknown> = { ...current };
-    for (const [k, v] of Object.entries(incoming)) out[k] = mergeValue(current[k], v);
-    return out;
+    // Own properties only, on both sides, and the result is built from entries: a key such as
+    // `__proto__` or `constructor` is one more key, never the object's prototype or something inherited.
+    const merged = new Map(Object.entries(current));
+    for (const [k, v] of Object.entries(incoming)) merged.set(k, mergeValue(merged.get(k), v));
+    return Object.fromEntries(merged);
   }
   return incoming;
 }
@@ -150,7 +155,7 @@ function isExactly(raw: string, before: Record<string, unknown>, changes: Map<st
   const after = plainData(raw);
   if (after === null) return false;
   const keys = new Set([...Object.keys(before), ...Object.keys(after), ...changes.keys()]);
-  return [...keys].every((k) => same(after[k], changes.has(k) ? changes.get(k) : before[k]));
+  return [...keys].every((k) => same(own(after, k), changes.has(k) ? changes.get(k) : own(before, k)));
 }
 
 /** Anchors defined in `node` (or below it) that an alias elsewhere in the document refers to. */
@@ -179,7 +184,7 @@ function applyFrontmatterOp(text: string, op: Extract<PatchOp, { op: `frontmatte
       ? [[op.key, op.value]]
       : op.op === 'frontmatter.unset'
         ? [[op.key, undefined]]
-        : Object.entries(op.value).map(([k, v]) => [k, mergeValue(before[k], v)]),
+        : Object.entries(op.value).map(([k, v]) => [k, mergeValue(own(before, k), v)]),
   );
   // JSON in, JSON out: compare against what the value looks like after a round trip
   for (const [k, v] of changes) if (v !== undefined) changes.set(k, JSON.parse(JSON.stringify(v)));

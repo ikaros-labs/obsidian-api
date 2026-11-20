@@ -49,7 +49,8 @@ const invalidBase = (message: string, details?: Record<string, unknown>) => new 
 
 export function parseBase(text: string): BaseFile {
   const doc = parseYaml(text);
-  if (doc.errors.length > 0) throw invalidBase(`The base is not valid YAML: ${doc.errors[0]!.message}`);
+  // The parser's message quotes the file, so it goes in the details: messages hold no vault text.
+  if (doc.errors.length > 0) throw invalidBase('The base is not valid YAML', { yaml_error: doc.errors[0]!.message });
   const r = BaseSchema.safeParse(doc.toJS() ?? {});
   if (!r.success) {
     throw invalidBase('The base has an unexpected structure', {

@@ -541,7 +541,10 @@ export class BasesEngine {
     const cached = this.state.fileCache.get(cacheKey);
     if (cached) return cached;
     const fm = e.meta?.frontmatter ?? {};
-    const note = this.withLinks(normalizeFrontmatterProperties(asData(fm) as Record<string, unknown>, { propertyTypes: this.rowTypes(fm) }), e.path);
+    // Each property is converted on its own: the frontmatter itself stays the map of properties,
+    // also when two of its keys happen to be `type` and `value`.
+    const properties = Object.fromEntries(Object.entries(fm).map(([k, v]) => [k, asData(v)]));
+    const note = this.withLinks(normalizeFrontmatterProperties(properties, { propertyTypes: this.rowTypes(fm) }), e.path);
     const links = (e.meta?.links ?? []).map((l) => ({
       path: l.target,
       resolvedPath: this.scope.index.resolveLink(l, e.path, this.scope.visible)?.path ?? null,
