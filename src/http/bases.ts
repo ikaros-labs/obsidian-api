@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { FilterExpression } from 'obsidian-bases-expression';
 import { z } from 'zod';
 import { baseDiagnostics, displayName, parseBase, SortSchema, type BaseFile } from '../bases/base-file.js';
-import { BasesEngine, plainValue, withBudget, type ViewSpec } from '../bases/engine.js';
+import { BasesEngine, Budget, plainValue, retainedMeter, type ViewSpec } from '../bases/engine.js';
 import { ApiError, invalidRequest, notFound } from '../errors.js';
 import { splitFrontmatter } from '../markdown.js';
 import { isPrefix, join, parsePlainPath } from '../paths.js';
@@ -64,15 +64,16 @@ async function readBase(ctx: Ctx, segs: string[]): Promise<{ real: string[]; bas
 }
 
 /** Rejects request filters that don't parse, instead of silently matching nothing. */
-function checkRequestFilter(filter: unknown) {
+function checkRequestFilter(filter: unknown, budget: Budget) {
   if (filter === undefined) return;
-  const diagnostics = BasesEngine.compile({ filters: [{ where: 'filters', filter: filter as FilterExpression }], formulas: {}, sort: [], columns: [] }).diagnostics;
+  const diagnostics = budget.run(() => BasesEngine.compile({ filters: [{ where: 'filters', filter: filter as FilterExpression }], formulas: {}, sort: [], columns: [] }).diagnostics);
   if (diagnostics.length > 0) throw invalidRequest('Invalid filter expression', { diagnostics });
 }
 
 /** Runs a view and shapes the response. Shared by base queries and ad-hoc queries. */
 async function respond(
   ctx: Ctx,
+  budget: Budget,
   rows: Entry[],
   spec: ViewSpec,
   body: CommonBody,
@@ -86,7 +87,7 @@ async function respond(
     ctx.s.engineCache.get(ctx.account, stateKey),
   );
   const toApiPath = (p: string) => ctx.toApi(p);
-  const result = withBudget(() => engine.run(rows, spec, { thisFile: meta.thisFile, toApiPath }));
+  const result = budget.run(() => engine.run(rows, spec, { thisFile: meta.thisFile, toApiPath }));
   const head = { ...meta.head, columns: spec.columns.map((key) => ({ key, name: meta.names(key) })) };
 
   if (body.count_only) {
@@ -107,12 +108,14 @@ async function respond(
   }
 
   const columnFailures = new Map<string, { message: string; rows: number }>();
-  // Column values are expressions too: evaluated for the whole page under one budget.
-  const pageValues = withBudget(() =>
+  // Column values are expressions too: evaluated under what is left of the query's budget.
+  const keep = retainedMeter();
+  const pageValues = budget.run(() =>
     selected.map((row) => {
       const values: Record<string, unknown> = {};
       for (const col of result.compiled.columns) {
         const v = col.compiled.evaluateValue(row.ctx);
+        keep(v);
         if (v.type === 'Error') {
           const f = columnFailures.get(col.id) ?? { message: v.value.message, rows: 0 };
           f.rows++;
@@ -168,7 +171,7 @@ export function baseRoutes(app: FastifyInstance, s: Services) {
         group_by: v.groupBy ?? null,
         limit: v.limit ?? null,
       })),
-      diagnostics: baseDiagnostics(base),
+      diagnostics: new Budget().run(() => baseDiagnostics(base)),
     };
   });
 
@@ -177,7 +180,8 @@ export function baseRoutes(app: FastifyInstance, s: Services) {
     const raw = ctx.urlPath(PREFIX);
     if (raw.length <= ctx.account.root.length + 1 || raw.at(-1) !== 'query') throw new ApiError(404, 'not_found', 'No such endpoint');
     const body = parse(BaseQueryBody, req.body ?? {});
-    checkRequestFilter(body.filters);
+    const budget = new Budget();
+    checkRequestFilter(body.filters, budget);
     const { real, base, rev } = await readBase(ctx, withBaseExtension(raw.slice(0, -1)));
 
     const view = body.view === undefined ? base.views[0] : base.views.find((v) => v.name === body.view);
@@ -207,7 +211,7 @@ export function baseRoutes(app: FastifyInstance, s: Services) {
       limit: view?.limit,
     };
     const { cursor: _c, ...rest } = body;
-    return respond(ctx, universe(ctx), spec, body, {
+    return respond(ctx, budget, budget.run(() => universe(ctx)), spec, body, {
       cursorParts: [ctx.account.name, join(real), rev, rest],
       names: (id) => displayName(base, id),
       thisFile,
@@ -218,7 +222,8 @@ export function baseRoutes(app: FastifyInstance, s: Services) {
   app.post('/v1/query', { schema: doc({ summary: 'Evaluate an ad-hoc Bases query', tag: 'Bases', body: AdhocQueryBody }) }, async (req) => {
     const ctx = new Ctx(req, s);
     const body = parse(AdhocQueryBody, req.body ?? {});
-    checkRequestFilter(body.filters);
+    const budget = new Budget();
+    checkRequestFilter(body.filters, budget);
     const folders = body.from.map((f) => {
       const segs = ctx.toVault(parsePlainPath(f));
       const e = s.index.get(join(segs));
@@ -235,7 +240,7 @@ export function baseRoutes(app: FastifyInstance, s: Services) {
       columns: body.select ?? ['file.name', ...Object.keys(body.formulas).map((f) => `formula.${f}`)],
     };
     const { cursor: _c, ...rest } = body;
-    return respond(ctx, universe(ctx, outer), spec, body, {
+    return respond(ctx, budget, budget.run(() => universe(ctx, outer)), spec, body, {
       cursorParts: [ctx.account.name, 'query', rest],
       names: (id) => id,
       head: { from: outer.map((f) => ctx.toApi(f)) },

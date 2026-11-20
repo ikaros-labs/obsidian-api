@@ -49,7 +49,9 @@ type Scope = Record<string, Value>;
 interface EvaluatorInternals {
   eval(expr: unknown, scope?: Scope): Value;
   evalBinary(op: string, left: unknown, right: unknown, scope: Scope): Value;
-  callMethod(receiver: Value, name: string, argExprs: unknown[], scope: Scope): Value;
+  callString(value: string, name: string, args: Value[]): Value;
+  callList(values: Value[], name: string, argExprs: unknown[], scope: Scope): Value;
+  asNumber(value: Value): number;
   equals(left: Value, right: Value): boolean;
 }
 const ORDERING = new Set(['<', '>', '<=', '>=']);
@@ -99,41 +101,146 @@ proto.evalBinary = function (op, leftExpr, rightExpr, scope) {
 
 /**
  * Expressions come from requests and from .base files accounts write, and they run on the one event
- * loop every account shares. Two limits keep one query from holding it:
+ * loop every account shares. These limits keep one query from holding it or filling the heap:
  *
- * - `withBudget` gives the evaluation of one query a fixed time. The watchdog of `vm` interrupts
- *   the running JavaScript, including a regex that backtracks, which nothing inside the thread can.
- * - A method call may not return a string or list far larger than anything a note holds, so
- *   `"a".repeat(1e9)` and its like fail as a value error instead of allocating.
+ * - `Budget` gives everything a query evaluates (compiling, filtering, sorting, the page's columns)
+ *   one fixed amount of time. The watchdog of `vm` interrupts the running JavaScript, including a
+ *   regex that backtracks, which nothing inside the thread can.
+ * - A value an expression builds may not be larger than `MAX_VALUE_SIZE` (characters plus list items
+ *   and object keys, nested ones included). The operations whose result can be far larger than
+ *   their operands (`repeat`, `replace`, `join`) are checked before they run, so the large value is
+ *   never allocated.
+ * - One expression, for one row, may build `MAX_EXPRESSION_ALLOCATION` in total, which stops a
+ *   `map` from making many values that are each within the limit.
+ * - `retainedMeter` bounds what a query keeps for all its rows (sort and group keys, a page's cells).
  */
 export const EVALUATION_BUDGET_MS = 1000;
 const MAX_VALUE_SIZE = 100_000;
+/** What `replace` may build at most before its result is checked against `MAX_VALUE_SIZE`. */
+const MAX_TRANSIENT_SIZE = 10_000_000;
+const MAX_EXPRESSION_ALLOCATION = 10_000_000;
+const MAX_RETAINED_SIZE = 20_000_000;
 
 const budgetContext = createContext({});
 const budgetScript = new Script('run()');
 
-export function withBudget<T>(fn: () => T): T {
-  const sandbox = budgetContext as { run?: () => T };
-  sandbox.run = fn;
-  try {
-    return budgetScript.runInContext(budgetContext, { timeout: EVALUATION_BUDGET_MS }) as T;
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') {
-      throw invalidRequest(`The query is too expensive: its filters and formulas ran for more than ${EVALUATION_BUDGET_MS} ms. Simplify them or narrow the folders`);
+const tooExpensive = () =>
+  invalidRequest(`The query is too expensive: its filters and formulas ran for more than ${EVALUATION_BUDGET_MS} ms. Simplify them or narrow the folders`);
+
+/** The evaluation time of one query. Every synchronous piece of its work runs through `run`. */
+export class Budget {
+  private spent = 0;
+
+  run<T>(fn: () => T): T {
+    const left = Math.floor(EVALUATION_BUDGET_MS - this.spent);
+    if (left < 1) throw tooExpensive();
+    const sandbox = budgetContext as { run?: () => T };
+    sandbox.run = fn;
+    const started = performance.now();
+    // An interrupted evaluation unwinds without running `finally` blocks: start from a clean meter.
+    evalDepth = 0;
+    try {
+      return budgetScript.runInContext(budgetContext, { timeout: left }) as T;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') throw tooExpensive();
+      throw e;
+    } finally {
+      evalDepth = 0;
+      this.spent += performance.now() - started;
+      delete sandbox.run;
     }
-    throw e;
-  } finally {
-    delete sandbox.run;
   }
 }
 
-const libraryCallMethod = proto.callMethod;
-proto.callMethod = function (receiver, name, argExprs, scope) {
-  const out = libraryCallMethod.call(this, receiver, name, argExprs, scope);
-  if ((out.type === 'String' || out.type === 'List') && out.value.length > MAX_VALUE_SIZE) {
-    return errorValue(`The result of ${name}() is too large (more than ${MAX_VALUE_SIZE} ${out.type === 'String' ? 'characters' : 'items'})`);
+const sizes = new WeakMap<object, number>();
+
+/**
+ * Characters, list items and object keys in a value, nested ones included. Counting stops soon
+ * after `MAX_VALUE_SIZE`, so the cost is bounded however large (or shared) the value is.
+ */
+function sizeOf(v: Value): number {
+  if (v.type !== 'List' && v.type !== 'Object') return typeof v.value === 'string' ? v.value.length : 1;
+  const known = sizes.get(v.value);
+  if (known !== undefined) return known;
+  let n = 1;
+  if (v.type === 'List') {
+    for (const item of v.value) {
+      n += sizeOf(item);
+      if (n > MAX_VALUE_SIZE) break;
+    }
+  } else {
+    for (const key in v.value) {
+      if (!Object.hasOwn(v.value, key)) continue;
+      n += key.length + sizeOf(v.value[key]!);
+      if (n > MAX_VALUE_SIZE) break;
+    }
   }
-  return out;
+  sizes.set(v.value, n);
+  return n;
+}
+
+const tooLarge = (what: string) => errorValue(`The result of ${what} is too large (more than ${MAX_VALUE_SIZE} characters or items)`);
+
+/** Sums what a query keeps; throws once it is more than a response could reasonably carry. */
+export function retainedMeter(): (v: RuntimeValue | undefined) => void {
+  let kept = 0;
+  return (v) => {
+    if (v === undefined) return;
+    kept += sizeOf(v) + 1;
+    if (kept > MAX_RETAINED_SIZE) throw invalidRequest('The query builds too much data: its sort, group or column values are too large for this many rows. Simplify them or narrow the folders');
+  };
+}
+
+/** Node types that build a new value; identifiers and member reads hand out what is already there. */
+const BUILDS = new Set(['Call', 'Binary', 'Array', 'Object']);
+let evalDepth = 0;
+let allocated = 0;
+const overAllocated = () => errorValue('This expression builds too much data');
+
+const libraryEval = proto.eval;
+proto.eval = function (expr, scope) {
+  if (evalDepth === 0) allocated = 0;
+  else if (allocated > MAX_EXPRESSION_ALLOCATION) return overAllocated();
+  evalDepth++;
+  let out: Value;
+  try {
+    out = libraryEval.call(this, expr, scope);
+  } finally {
+    evalDepth--;
+  }
+  const node = expr as { type?: string; callee?: { property?: unknown } } | undefined;
+  if (!node || !BUILDS.has(node.type!)) return out;
+  const size = sizeOf(out);
+  if (size > MAX_VALUE_SIZE) return tooLarge(node.type === 'Call' && typeof node.callee?.property === 'string' ? `${node.callee.property}()` : 'this expression');
+  allocated += size + 1;
+  return allocated > MAX_EXPRESSION_ALLOCATION ? overAllocated() : out;
+};
+
+const libraryCallString = proto.callString;
+proto.callString = function (value, name, args) {
+  if (name === 'repeat' && value.length * this.asNumber(args[0] ?? fromJs(0)) > MAX_VALUE_SIZE) return tooLarge('repeat()');
+  if (name === 'replace') {
+    // Each match adds at most the replacement; `$&` and `$1` add at most the text they stand for,
+    // once over all matches; "$`" and "$'" can add the whole string at every match.
+    const replacement = stringifyValue(args[1] ?? fromJs(''));
+    const refs = replacement.split('$').length - 1;
+    const perMatch = replacement.length + (/\$[`']/.test(replacement) ? refs * value.length : 0);
+    if (value.length + (value.length + 1) * perMatch + refs * value.length > MAX_TRANSIENT_SIZE) return tooLarge('replace()');
+  }
+  return libraryCallString.call(this, value, name, args);
+};
+
+const libraryCallList = proto.callList;
+proto.callList = function (values, name, argExprs, scope) {
+  if (name === 'join' && argExprs[0] !== undefined) {
+    let total = values.length * stringifyValue(this.eval(argExprs[0], scope)).length;
+    for (const item of values) {
+      if (total > MAX_VALUE_SIZE) break;
+      total += sizeOf(item);
+    }
+    if (total > MAX_VALUE_SIZE) return tooLarge('join()');
+  }
+  return libraryCallList.call(this, values, name, argExprs, scope);
 };
 
 export interface SortSpec {
@@ -593,9 +700,12 @@ export class BasesEngine {
     }
 
     const sortValues = new Map<Row, RuntimeValue[]>();
+    const keep = retainedMeter();
     for (const row of rows) {
-      sortValues.set(row, compiled.sort.map((s) => s.compiled.evaluateValue(row.ctx)));
-      if (compiled.groupBy) row.group = compiled.groupBy.compiled.evaluateValue(row.ctx);
+      const keys = compiled.sort.map((s) => s.compiled.evaluateValue(row.ctx));
+      keys.forEach(keep);
+      sortValues.set(row, keys);
+      if (compiled.groupBy) keep((row.group = compiled.groupBy.compiled.evaluateValue(row.ctx)));
     }
     rows.sort((a, b) => {
       if (compiled.groupBy) {
