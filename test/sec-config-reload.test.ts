@@ -83,4 +83,23 @@ describe('revocation takes effect at reload', () => {
     writeConfig(v2, env.vault, { accounts: ACCOUNTS });
     await eventually(async () => (await me(app, 'tok-reader')).statusCode === 200);
   });
+
+  // Review round: the proposed vault is never looked at, so a revocation in the same edit applies.
+  it('F-09: a token change applies when the proposed vault path cannot be used', async () => {
+    env = await setup({ accounts: ACCOUNTS });
+    const configs = ConfigManager.load(env.configPath, { info() {}, error() {} });
+    const app = await createApp(configs);
+    closers.push(() => app.close());
+    const running = configs.current.vaultPath;
+    for (const vault of [path.join(env.dir, 'no-such-vault'), env.configPath, path.dirname(env.configPath)]) {
+      writeConfig(env.configPath, vault, { accounts: { other: ACCOUNTS.other } });
+      expect(configs.reload(), vault).toBe(true);
+      expect(configs.current.vaultPath).toBe(running);
+      expect((await me(app, 'tok-reader')).statusCode).toBe(401);
+      expect((await me(app, 'tok-other')).statusCode).toBe(200);
+      writeConfig(env.configPath, env.vault, { accounts: ACCOUNTS });
+      expect(configs.reload()).toBe(true);
+      expect((await me(app, 'tok-reader')).statusCode).toBe(200);
+    }
+  });
 });
