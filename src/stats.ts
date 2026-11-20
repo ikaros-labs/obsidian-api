@@ -10,11 +10,20 @@ const DAY_MS = 86_400_000;
 
 /** `ms` as a calendar date (YYYY-MM-DD) in `timeZone`. */
 export function dateIn(ms: number, timeZone: string): string {
-  const f = formatters.get(timeZone) ?? new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
-  formatters.set(timeZone, f);
+  let f = formatters.get(timeZone);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
+    // The zone name comes from the request and has endless spellings ("utc", "UTC", "Utc"…): the
+    // cache only has to cover the zone a series is being computed in, so it stays small.
+    if (formatters.size >= MAX_FORMATTERS) formatters.clear();
+    formatters.set(timeZone, f);
+  }
   return f.format(ms);
 }
+const MAX_FORMATTERS = 32;
 const formatters = new Map<string, Intl.DateTimeFormat>();
+/** For tests. */
+export const cachedFormatters = (): number => formatters.size;
 
 const toUtc = (date: string) => Date.parse(`${date}T00:00:00Z`);
 const fromUtc = (ms: number) => new Date(ms).toISOString().slice(0, 10);
