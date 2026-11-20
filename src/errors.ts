@@ -13,6 +13,7 @@ export type ErrorCode =
   | 'not_a_note'
   | 'payload_too_large'
   | 'rate_limited'
+  | 'audit_unavailable'
   | 'internal';
 
 export class ApiError extends Error {

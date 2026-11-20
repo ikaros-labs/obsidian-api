@@ -23,6 +23,8 @@ class WriteLock {
 
 /** A move that linked the destination but could remove neither the source nor the new link. */
 export class PartialMoveError extends Error {
+  /** The error code in the audit log's result line. */
+  readonly code = 'move_incomplete';
   constructor(
     readonly from: Segs,
     readonly to: Segs,

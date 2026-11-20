@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { ApiError, alreadyExists, forbidden, invalidRequest, notFound } from '../errors.js';
 import { joinFrontmatter, outline } from '../markdown.js';
 import { PatchBodySchema, applyPatch } from '../patch.js';
-import { parsePlainPath, sanitizeTitle, withMdExtension } from '../paths.js';
+import { join, parsePlainPath, sanitizeTitle, withMdExtension } from '../paths.js';
 import { revOf } from '../vault-index.js';
 import { Ctx, etag, header, negotiate, parse, parseEtagList, project, type Services } from './context.js';
 import { checkIfMatch, checkNotANote, DeleteQuery, deleteFile, MoveBody, moveFile, noteJson, putFile, stripMove } from './fileops.js';
@@ -98,20 +98,22 @@ export function noteRoutes(app: FastifyInstance, s: Services) {
       if ((await s.vault.kindOf(folder)) === 'file') throw new ApiError(400, 'invalid_path', 'folder is a file');
 
       const data = Buffer.from(renderNote(b.frontmatter, b.body), 'utf8');
-      let target = [...folder, name];
-      for (let attempt = 0; ; attempt++) {
-        try {
-          await s.vault.create(target, data);
-          break;
-        } catch (e) {
-          if (!(e instanceof ApiError && e.code === 'already_exists') || b.on_conflict === 'fail' || attempt > 50) {
-            throw e instanceof ApiError && e.code === 'already_exists' ? alreadyExists(ctx.toApi(target)) : e;
-          }
-          target = await s.vault.freePath(target);
-        }
-      }
       const rev = revOf(data);
-      await ctx.audit('create', target, { new_rev: rev });
+      let target = [...folder, name];
+      // The intent names the requested path; the result line has the one created (on_conflict: rename).
+      await ctx.audited('create', target, { new_rev: rev }, async () => {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            await s.vault.create(target, data);
+            return { path: join(target) };
+          } catch (e) {
+            if (!(e instanceof ApiError && e.code === 'already_exists') || b.on_conflict === 'fail' || attempt > 50) {
+              throw e instanceof ApiError && e.code === 'already_exists' ? alreadyExists(ctx.toApi(target)) : e;
+            }
+            target = await s.vault.freePath(target);
+          }
+        }
+      });
       reply.code(201).header('etag', etag(rev));
       if (!perms.has('read')) return { path: ctx.toApi(target), rev };
       return noteJson(ctx, target, data.toString('utf8'));
@@ -133,8 +135,7 @@ export function noteRoutes(app: FastifyInstance, s: Services) {
       const next = applyPatch(text, body.ops);
       const newRev = revOf(Buffer.from(next, 'utf8'));
       if (next !== text) {
-        await s.vault.overwrite(real, next);
-        await ctx.audit('patch', real, { old_rev: oldRev, new_rev: newRev, ops: body.ops.map((o) => o.op) });
+        await ctx.audited('patch', real, { old_rev: oldRev, new_rev: newRev, ops: body.ops.map((o) => o.op) }, () => s.vault.overwrite(real, next));
       }
       reply.header('etag', etag(newRev));
       return project(await noteJson(ctx, real, next, { body: q.return === 'full' }), q.fields);

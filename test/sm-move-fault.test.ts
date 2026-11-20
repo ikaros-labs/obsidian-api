@@ -67,8 +67,9 @@ describe('B11 move whose rollback fails too, or whose destination changed meanwh
     expect(existsSync(from) && existsSync(to)).toBe(true);
     expect(env.app.index.get('Research/Plan.md')).toBeDefined();
     expect(env.app.index.get('Research/Moved.md')).toBeDefined();
-    const audit = readFileSync(env.auditPath, 'utf8');
-    expect(audit).toMatch(/"op":"move_incomplete"/);
+    const [intent, result] = readFileSync(env.auditPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(intent).toMatchObject({ phase: 'intent', op: 'move', path: 'Research/Plan.md', destination: 'Research/Moved.md' });
+    expect(result).toMatchObject({ phase: 'result', request: intent.request, outcome: 'failed', error: 'move_incomplete' });
   });
 
   it('does not remove a destination that something else replaced meanwhile', async () => {

@@ -126,8 +126,7 @@ export async function putFile(ctx: Ctx, segs: string[], data: Buffer, reply: Fas
       if (!perms.has('update')) throw forbidden('update');
       const oldRev = revOf(await vault.read(real));
       checkIfMatch(ifMatch, oldRev);
-      await vault.overwrite(real, data);
-      await ctx.audit('update', real, { old_rev: oldRev, new_rev: revOf(data) });
+      await ctx.audited('update', real, { old_rev: oldRev, new_rev: revOf(data) }, () => vault.overwrite(real, data));
       created = false;
     } else {
       if (!perms.has('create')) throw perms.has('read') ? forbidden('create') : notFound();
@@ -135,8 +134,7 @@ export async function putFile(ctx: Ctx, segs: string[], data: Buffer, reply: Fas
         if (!perms.has('read')) throw notFound();
         checkIfMatch(ifMatch, null);
       }
-      await vault.create(real, data);
-      await ctx.audit('create', real, { new_rev: revOf(data) });
+      await ctx.audited('create', real, { new_rev: revOf(data) }, () => vault.create(real, data));
       created = true;
     }
     const rev = revOf(data);
@@ -158,13 +156,8 @@ export async function deleteFile(ctx: Ctx, segs: string[], reply: FastifyReply) 
     if ((await vault.kindOf(real)) !== 'file') throw notFound();
     const rev = revOf(await vault.read(real));
     checkIfMatch(parseEtagList(header(ctx.req, 'if-match')), rev);
-    if (permanent) {
-      await vault.purge(real);
-      await ctx.audit('purge', real, { old_rev: rev });
-    } else {
-      const trashed = await vault.trash(real);
-      await ctx.audit('delete', real, { old_rev: rev, trash: trashed });
-    }
+    if (permanent) await ctx.audited('purge', real, { old_rev: rev }, () => vault.purge(real));
+    else await ctx.audited('delete', real, { old_rev: rev }, async () => ({ trash: await vault.trash(real) }));
     return reply.code(204).send();
   });
 }
@@ -199,16 +192,15 @@ export async function moveFile(ctx: Ctx, segs: string[], body: unknown, kind: Ki
     }
     const rev = revOf(await vault.read(real));
     try {
-      await vault.move(real, realDest);
+      await ctx.audited('move', real, { destination: join(realDest), rev }, () => vault.move(real, realDest));
     } catch (e) {
+      // Audited as a failed move with error move_incomplete.
       if (!(e instanceof PartialMoveError)) throw e;
-      await ctx.audit('move_incomplete', real, { destination: join(realDest), rev });
       throw new ApiError(500, 'internal', 'The file was linked at the destination, but neither name could be removed: it is now at both paths', {
         path: ctx.toApi(real),
         destination: ctx.toApi(realDest),
       });
     }
-    await ctx.audit('move', real, { destination: join(realDest), rev });
     if (!destPerms.has('read')) return { path: ctx.toApi(realDest), rev };
     return kind.note
       ? noteJson(ctx, realDest, (await vault.read(realDest)).toString('utf8'))

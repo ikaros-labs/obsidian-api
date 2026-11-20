@@ -168,7 +168,7 @@ that changes the limit opens a fresh window (cosmetic, admin-triggered).
 **Lives in** `src/vault.ts:9-22` (`WriteLock`) and `vault.ts:55-61` (`Vault.exclusive`, which also
 finishes a pending overwrite recovery, M6, before running the write). Taken by every API write:
 PUT, DELETE and move (`fileops.ts:110,156,180`), `POST /v1/notes` and PATCH (`notes.ts:93,127`),
-folder create and delete (`folders.ts:255,274`). Reads never take it.
+folder create and delete (`folders.ts:255,273`). Reads never take it.
 
 *Before I1* it was a per-key mutex (`Locks`) keyed by the lower-cased *requested* path, taken by
 PUT, DELETE, move, PATCH and folder DELETE only.
@@ -188,8 +188,8 @@ PUT, DELETE, move, PATCH and folder DELETE only.
 | Held(+queued) | `fn` resolves or rejects | Free / next in queue | `vault.ts:18-19` |
 
 **What the lock covers, and when.** It is held for the whole route body: permission checks on the
-resolved path, the filesystem change, the index refresh, the audit-log append and (for PUT, PATCH,
-POST and move) building the response. A slow disk or audit sink therefore delays every queued
+resolved path, the audit intent line, the filesystem change, the index refresh, the audit result
+line and (for PUT, PATCH, POST and move) building the response. A slow disk or audit sink therefore delays every queued
 write; that is the price of D1. Two things happen *before* a write queues and so can be stale by
 the time it runs:
 - authentication and the account snapshot (`server.ts:73-81`): a write queued behind a slow one
@@ -204,7 +204,7 @@ External writers (Obsidian, sync) can't take the lock; see U3.
 **Invalid states (fixed by I1).**
 - **B1** (broke I5.2): folder DELETE locked only the folder's own key; a PUT into the folder locked
   the file's key. Both ran at once, so the recursive delete's "everything inside is visible and
-  deletable" check (`folders.ts:282-288`) could pass, then a file another account had just written
+  deletable" check (`folders.ts:281-286`) could pass, then a file another account had just written
   was purged or trashed by an account that couldn't even see it.
 - **B2** (broke I5.1): keys were requested paths, not real ones. With `follow_symlinks`,
   `Alias/Plan.md` and `Research/Plan.md` are one file under two keys, so two PATCHes read the same
@@ -236,17 +236,17 @@ content); **Journaled(old, new_rev)**: an overwrite is in flight or was cut shor
 
 | From | Event | To | Guard | Code |
 | --- | --- | --- | --- | --- |
-| Absent | PUT | Present(r) | `create` perm; no `If-Match` other than none; `O_EXCL` | `fileops.ts:132-141`, `vault.ts:119-138` |
+| Absent | PUT | Present(r) | `create` perm; no `If-Match` other than none; `O_EXCL` | `fileops.ts:131-139`, `vault.ts:119-138` |
 | Absent | PUT / POST, write fails after `open` | Absent (partial new file unlinked), error | | `vault.ts:128-135` (fixed **B12**) |
 | Absent | POST /notes | Present(r) at `Title.md` or `Title N.md` | `create` on folder; `on_conflict` | `notes.ts:90-119` |
-| Present(r) | PUT / PATCH: journal old bytes (synced), write in place, drop journal | Present(r') | `read`+`update`; `If-Match` ∋ r | `fileops.ts:119-131`, `notes.ts:127-141`, `vault.ts:146-161` |
+| Present(r) | PUT / PATCH: journal old bytes (synced), write in place, drop journal | Present(r') | `read`+`update`; `If-Match` ∋ r | `fileops.ts:119-130`, `notes.ts:129-142`, `vault.ts:146-161` |
 | Present(r) | journal write fails (e.g. disk full) | Present(r), error | | `vault.ts:163-175` |
 | Present(r) | in-place write fails, rollback works | Present(r), journal dropped, error | | `vault.ts:153-154` |
 | Present(r) | in-place write *and* rollback fail, or crash | Partial + Journaled | | `vault.ts:155` |
 | Partial + Journaled | next `exclusive()` write, or startup `recover()` | Present(r) (or Present(r') if the write had completed), journal dropped | file exists | `vault.ts:55-61, 188-224`, `app.ts:24-27` |
-| Present(r) | DELETE | Trashed | `read`+`delete`; `If-Match` | `fileops.ts:152-170`, `vault.ts:283-290` |
+| Present(r) | DELETE | Trashed | `read`+`delete`; `If-Match` | `fileops.ts:150-163`, `vault.ts:283-290` |
 | Present(r) | DELETE `permanent=true` | Absent | `read`+`purge` | `vault.ts:292-295` |
-| Present(r) at A | move to B | Absent at A, Present(r) at B | see M7 | `fileops.ts:177-218` |
+| Present(r) at A | move to B | Absent at A, Present(r) at B | see M7 | `fileops.ts:170-209` |
 | any | external write / delete | any | | M9 picks it up |
 
 `overwrite` writes in place on purpose: a rename over a temp file would give the note a new inode
@@ -258,7 +258,25 @@ served or watched.
 retry after a lost response gets 409/412 and the current rev, not a second write; a retry after a
 failed write applies with the rev from *before* the failure. DELETE and move retries get 404 once
 the first one went through. `POST /v1/notes` with the default `on_conflict: rename` is *not*
-idempotent: a retry creates `Title 1.md` (see B9 and decision D4).
+idempotent: a retry after a *lost response* creates `Title 1.md` (decision D4). A retry after
+`audit_unavailable` is safe: that 500 means nothing was changed (B9, I12).
+
+**Audit record of a change** (`context.ts:103-149`, used by every write route). Each change is
+bracketed by two lines in the audit log, joined by `request` (the request id, also in error
+envelopes):
+
+| From | Event | To | Response |
+| --- | --- | --- | --- |
+| checks passed | intent append fails | nothing changed, nothing logged | 500 `audit_unavailable` |
+| checks passed | intent append works | Intent | (change runs) |
+| Intent | change works, result append works | Intent + `ok` | the real outcome |
+| Intent | change fails, result append works | Intent + `failed` (`error`: API or errno code) | the change's error |
+| Intent | result append fails (either outcome) | Intent only: outcome unknown from the log; server error logged | the real outcome |
+| Intent | server dies during the change | Intent only: outcome unknown | none |
+
+Requests rejected before the intent (auth, permissions, `If-Match`, 409 on PUT) are not logged, as
+before. An intent without a result is the only ambiguous record; it means "this was attempted",
+and the vault is the source of truth for whether it happened.
 
 **Invalid states.**
 - **B3** (broke I6.2, I6.3; fixed by I2, completed by I7): `writeFile` truncates first. If it failed
@@ -267,9 +285,9 @@ idempotent: a retry creates `Title 1.md` (see B9 and decision D4).
   a disk that kept failing, or a crash, still left a partial note; I7 journals the old bytes first.
 - **B12** (broke I6.4; fixed by I7): a create whose write failed left a partial new file, and a
   retry with `If-None-Match: *` then got 409.
-- **B9**: the audit line is written after the change (`fileops.ts:130`, `notes.ts:114`, …). If that
-  write fails, the client gets 500 for a change that happened; a retry of `POST /v1/notes` then
-  makes a duplicate. Not fixed (D3).
+- **B9** (fixed by I12): the audit line was written after the change. If that write failed, the
+  client got 500 for a change that had happened, and a retry of `POST /v1/notes` made a duplicate.
+  Now the intent line is written first and a failed result line doesn't change the response.
 
 ---
 
@@ -277,7 +295,7 @@ idempotent: a retry creates `Title 1.md` (see B9 and decision D4).
 
 **Lives in** `src/vault.ts:238-281` (`Vault.move`, `unlinkIfSameFile`), called by `moveFile` under
 the write lock (M5), which turns a `PartialMoveError` into a 500 naming both paths
-(`fileops.ts:200-211`).
+(`fileops.ts:194-203`).
 
 **States** for a move A → B: **Src** (only A), **Both** (A and B are hard links of one inode),
 **Dst** (only B).
@@ -295,7 +313,7 @@ the write lock (M5), which turns a `PartialMoveError` into a 500 naming both pat
 | Both | `unlink(A)` | Dst | | `vault.ts:250` |
 | Both | `unlink(A)` fails, B is our link, `unlink(B)` works | Src, original error | | `vault.ts:251-259, 271-281` |
 | Both | `unlink(A)` fails, B was replaced by someone else | Src (B left alone), original error | inode differs | `vault.ts:274` |
-| Both | `unlink(A)` and `unlink(B)` fail | Both, indexed; 500 with `path` + `destination`; audit `move_incomplete` | | `vault.ts:254-257`, `fileops.ts:203-211` |
+| Both | `unlink(A)` and `unlink(B)` fail | Both, indexed; 500 with `path` + `destination`; audit result `failed`, `error: move_incomplete` | | `vault.ts:254-257`, `fileops.ts:194-203` |
 | Src | `link` fails `EPERM`/`ENOTSUP`/`EXDEV` | Dst via check-then-`rename` | B absent at check | `vault.ts:245-247, 261-265` |
 | Src | `link` fails `EEXIST` | Src, 409 | | `vault.ts:244` |
 | Dst | index refresh of A and B | | | `vault.ts:266-267` |
@@ -320,7 +338,7 @@ rename, so this window stays (U3, D8).
 
 ## M8. A folder in the vault
 
-**Lives in** `src/http/folders.ts:251-294`, `src/vault.ts:127-136` (`mkdir`), `181-191`
+**Lives in** `src/http/folders.ts:251-292`, `src/vault.ts:127-136` (`mkdir`), `181-191`
 (`rmdirEmpty`), `167-179` (`trash`, `purge`).
 
 **States:** **Absent**, **Empty**, **NonEmpty(visible to the caller)**, **NonEmpty(has entries the
@@ -329,17 +347,17 @@ caller can't see or can't delete)**, **Trashed**.
 **Invariants.**
 - I8.1 A recursive delete only removes what the caller may delete: everything inside must be
   indexed (no dotfiles, no skipped symlinks) and carry `delete`/`purge` for the caller
-  (`folders.ts:282-288`).
+  (`folders.ts:281-286`).
 - I8.2 The root of an account can't be deleted.
 
 | From | Event | To | Guard | Code |
 | --- | --- | --- | --- | --- |
-| Absent | POST /folders | Empty | `create` | `folders.ts:251-265` |
+| Absent | POST /folders | Empty | `create` | `folders.ts:251-264` |
 | Absent | PUT/POST of a file below | NonEmpty (parents made with `mkdir -p`) | | `vault.ts:94` |
-| Empty | DELETE | Absent | `read`+`delete` | `folders.ts:277-281` |
+| Empty | DELETE | Absent | `read`+`delete` | `folders.ts:276-279` |
 | NonEmpty | DELETE | 409 `folder_not_empty` | not `recursive` | `vault.ts:185-187` |
-| NonEmpty(visible) | DELETE `recursive=true` | Trashed / Absent | check passes | `folders.ts:282-293` |
-| NonEmpty(hidden) | DELETE `recursive=true` | 409 / 403 | check fails | `folders.ts:286-287` |
+| NonEmpty(visible) | DELETE `recursive=true` | Trashed / Absent | check passes | `folders.ts:281-290` |
+| NonEmpty(hidden) | DELETE `recursive=true` | 409 / 403 | check fails | `folders.ts:284-285` |
 
 **Invalid state (fixed by I1).** **B1** (M5): between the check and the trash/purge, another request
 could turn NonEmpty(visible) into NonEmpty(hidden), and the hidden file was removed anyway. The
@@ -484,7 +502,7 @@ can still be overwritten by it (the window is a few milliseconds). See U6.
 ## Reachable invalid states and transitions (confirmed)
 
 "Confirmed" = reproduced by a test that fails before its fix (B1-B8 on `21b9c3a`; B10-B14 on the
-commit before their follow-up fix). B9 was reproduced by a scratch run, described in its row.
+commit before their follow-up fix; B9 on `12c702b`, after a first scratch reproduction).
 
 | Bug | Machine | Impact | What happens | Reproduced by | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -501,7 +519,7 @@ commit before their follow-up fix). B9 was reproduced by a scratch run, describe
 | B11 | M7 | wrong user-visible state, data loss (external file) | After I5: a failed rollback is swallowed (hidden duplicate); the rollback can delete a file an external writer put at B | `test/sm-move-fault.test.ts` "B11 …" | fixed (I10) |
 | B8 | M9 | wrong user-visible state | A refresh racing a folder removal leaves a ghost index entry under a missing folder | `test/sm-index-race.test.ts` "B8 …" | fixed (I6) |
 | B10 | M9 | wrong user-visible state | After I6: stale child published into a recreated folder or under a file; a scan repopulates a deleted subtree | `test/sm-index-race.test.ts` "B10 …" | fixed (I11) |
-| B9 | M6 | wrong user-visible state | The audit write fails after the change: 500 for a change that happened; a retried `POST /v1/notes` creates `Title 1.md` | scratch run (audit folder read-only): first POST 500, retry 201 `Research/Retry me 1.md`, both files on disk | not fixed (D3) |
+| B9 | M6 | wrong user-visible state | The audit write fails after the change: 500 for a change that happened; a retried `POST /v1/notes` creates `Title 1.md` | `test/sm-audit.test.ts` "B9 …" (audit path is a directory, or an injected `EIO` on the intent or the result line) | fixed (I12) |
 
 ## Unconfirmed
 
@@ -517,7 +535,7 @@ commit before their follow-up fix). B9 was reproduced by a scratch run, describe
 ## Issues
 
 Grouped fixes, in priority order. One commit each, each with the regression test named above.
-I7-I11 are the review round: they complete I2, I3, I4, I5 and I6.
+I7-I11 are the review round: they complete I2, I3, I4, I5 and I6. I12 implements decision D3.
 
 ### I1. One write lock for the whole vault
 - **Bugs:** B1, B2.
@@ -611,7 +629,7 @@ I7-I11 are the review round: they complete I2, I3, I4, I5 and I6.
 - **Impact:** wrong user-visible state; data loss of an external file.
 - **Fix:** the rollback unlinks B only if it is still the same inode as A. If B can't be removed
   either, `move` refreshes both paths in the index and throws `PartialMoveError`; `moveFile` audits
-  `move_incomplete` and answers 500 with a message and `details: {path, destination}`.
+  `move_incomplete` (since I12: a failed `move` result with that error code) and answers 500 with a message and `details: {path, destination}`.
 - **Commit:** `88dfb74`
 - **Test:** `test/sm-move-fault.test.ts` "B11 …"
 
@@ -625,6 +643,21 @@ I7-I11 are the review round: they complete I2, I3, I4, I5 and I6.
 - **Commit:** `5f853ab`
 - **Test:** `test/sm-index-race.test.ts` "B10 …"
 
+### I12. Audit log: intent line before the change, result line after
+- **Bugs:** B9.
+- **Impact:** wrong user-visible state (500 for a change that happened; duplicate notes on retry).
+- **Fix:** `Ctx.audited` (`context.ts:103-149`) wraps every vault change. It appends an intent line
+  (`phase: intent`, `request`, account, token, op, path, `via`, and what is known beforehand, such as
+  revs and the destination) under the write lock, after every check and before the vault is
+  touched. If that append fails, the request answers 500 `audit_unavailable` and nothing changes.
+  After the change it appends a result line (`phase: result`, same `request` and `op`,
+  `outcome: ok` plus what is only known afterwards: the trash path, the path `POST /v1/notes`
+  actually created; or `outcome: failed` and `error`). If only that append fails, the response is
+  the real outcome and the server logs an error. A partial move is recorded as a failed `move` with
+  `error: move_incomplete` (it was a separate `move_incomplete` op before).
+- **Test:** `test/sm-audit.test.ts` "B9 …"; the format is also checked in `api-notes`, `api-mcp`,
+  `cli-client` and `sm-move-fault`.
+
 ## Decisions
 
 - D1. One global write lock instead of per-path, hierarchical or real-path locks: writes are local
@@ -634,9 +667,13 @@ I7-I11 are the review round: they complete I2, I3, I4, I5 and I6.
   those out would reopen ordering questions (audit order vs. disk order) for a single-user server.
 - D2. Overwrites stay in place, keeping the inode and so `created`, as Obsidian does. I7 makes the
   in-place write recoverable with a journal instead of switching to temp + rename.
-- D3. B9 is left as is: returning success when the audit line could not be written would hide
-  unaudited changes, and writing the line first would log changes that then fail. A failing audit
-  log is an operator problem that already surfaces as 500s and an error in the server log.
+- D3. (Nikita's decision, 2026-11-20: option C.) Every audited write gets two lines: an intent
+  before the vault is touched and a result after it. No change happens unaudited: if the intent
+  can't be written the write is refused with `audit_unavailable`. A change is never reported as
+  failed because of the log: once the intent is on record, a lost result line only makes that
+  outcome unknown in the log, and the client gets the real one. An intent with no result means
+  "attempted, outcome unknown"; the vault is the source of truth. No idempotency keys (D4 stands).
+  Implemented by I12; B9 is fixed.
 - D4. `POST /v1/notes` with `on_conflict: rename` stays non-idempotent by design; clients that retry
   should use `PUT` with `If-None-Match: *`, which is.
 - D5. The journal lives in the vault (`.spall/journal`), not next to the config: it must be
