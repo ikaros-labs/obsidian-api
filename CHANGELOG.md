@@ -2,7 +2,7 @@
 
 ## 1.2.4 — 2026-11-20
 
-- **Security fix: `fields` reads only the response's own data.** A crafted `fields` value (REST `fields=`, and the MCP tools and CLI flags that pass it on) could reach past the response into shared process state and weaken authentication. `fields` now follows only the response's own properties. All earlier versions are affected; upgrade.
+- **Security fix: `fields` reads only the response's own data.** A crafted `fields` value (REST `fields=`, and the MCP tools and CLI flags that pass it on) could reach past the response into shared process state and weaken authentication. `fields` now follows only the response's own properties. Upgrade from 1.2.3.
 
 ## 1.2.3 — 2026-11-19
 
