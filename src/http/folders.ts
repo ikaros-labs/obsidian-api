@@ -252,14 +252,15 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
     const ctx = new Ctx(req, s);
     const segs = ctx.urlPath(PREFIX);
     if (segs.length === ctx.account.root.length) throw alreadyExists('');
-    const real = await s.vault.resolve(segs);
-    const perms = ctx.perms(real);
-    if (!perms.has('create')) throw perms.has('read') ? forbidden('create') : notFound();
-    if ((await s.vault.kindOf(real)) !== null) throw alreadyExists(ctx.toApi(real));
-    await s.vault.mkdir(real);
-    await ctx.audit('mkdir', real);
-    reply.code(201);
-    return { kind: 'folder', path: ctx.toApi(real) };
+    return s.vault.exclusive(async () => {
+      const real = await s.vault.resolve(segs);
+      const perms = ctx.perms(real);
+      if (!perms.has('create')) throw perms.has('read') ? forbidden('create') : notFound();
+      if ((await s.vault.kindOf(real)) !== null) throw alreadyExists(ctx.toApi(real));
+      await ctx.audited('mkdir', real, {}, () => s.vault.mkdir(real));
+      reply.code(201);
+      return { kind: 'folder', path: ctx.toApi(real) };
+    });
   });
 
   app.delete('/v1/folders/*', { schema: doc({ summary: 'Delete a folder (recursive=true for non-empty ones)', tag: 'Folders', url: '/v1/folders/{path}', query: DeleteQuery }) }, async (req, reply) => {
@@ -269,12 +270,11 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
     const perm = permanent ? 'purge' : 'delete';
     const segs = ctx.urlPath(PREFIX);
     if (segs.length === ctx.account.root.length) throw invalidRequest('The root folder cannot be deleted');
-    return s.vault.locks.run([join(segs)], async () => {
+    return s.vault.exclusive(async () => {
       const real = await ctx.resolve(segs, 'read', perm);
       if ((await s.vault.kindOf(real)) !== 'folder') throw notFound();
       if (q.recursive !== 'true') {
-        await s.vault.rmdirEmpty(real);
-        await ctx.audit('rmdir', real);
+        await ctx.audited('rmdir', real, {}, () => s.vault.rmdirEmpty(real));
         return reply.code(204).send();
       }
       // Everything inside must be indexed (so: no dotfiles, no skipped symlinks) and deletable.
@@ -284,9 +284,9 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
         if (!e) throw new ApiError(409, 'folder_not_empty', 'The folder contains files this account cannot see');
         if (!ctx.perms(e.segs).has(perm)) throw forbidden(`${perm} everything`);
       }
-      if (permanent) await s.vault.purge(real);
-      else await s.vault.trash(real);
-      await ctx.audit(permanent ? 'purge' : 'delete', real, { recursive: true });
+      await ctx.audited(permanent ? 'purge' : 'delete', real, { recursive: true }, async () =>
+        permanent ? s.vault.purge(real) : { trash: await s.vault.trash(real) },
+      );
       return reply.code(204).send();
     });
   });

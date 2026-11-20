@@ -39,6 +39,13 @@ export class VaultIndex {
   private readonly byName = new Map<string, Set<string>>();
   private watcher: FSWatcher | null = null;
   private pending = new Map<string, Promise<void>>();
+  /**
+   * Generation of each indexed folder: new when a folder appears where there was none (created,
+   * recreated after a delete, replacing a file). A read of a child is only published if its
+   * folder's generation is the one it started under.
+   */
+  private readonly gens = new Map<string, number>();
+  private nextGen = 1;
   /** Bumped on every change, so caches built from the index know when they're stale. */
   version = 0;
 
@@ -74,12 +81,20 @@ export class VaultIndex {
     this.entries.clear();
     this.children.clear();
     this.byName.clear();
+    this.gens.clear();
     const now = await stat(this.root);
     this.entries.set('', { path: '', segs: [], kind: 'folder', size: 0, created: now.birthtimeMs || now.mtimeMs, modified: now.mtimeMs });
     await this.scanDir('', new Set([await realpath(this.root)]));
   }
 
+  /** The generation of folder `p`, or undefined when `p` isn't an indexed folder. The root is always 0. */
+  private folderGen(p: string): number | undefined {
+    if (p === '') return 0;
+    return this.entries.get(p)?.kind === 'folder' ? this.gens.get(p) : undefined;
+  }
+
   private async scanDir(dir: string, visited: Set<string>): Promise<void> {
+    const gen = this.folderGen(dir);
     let names: string[];
     try {
       names = await readdir(path.join(this.root, ...split(dir)));
@@ -89,6 +104,8 @@ export class VaultIndex {
     for (const name of names) {
       const p = dir === '' ? name : `${dir}/${name}`;
       const entry = await this.load(p);
+      // The folder was removed or replaced while we read: its new state is someone else's refresh.
+      if (this.folderGen(dir) !== gen) return;
       if (!entry) continue;
       this.put(entry);
       if (entry.kind === 'folder') {
@@ -138,6 +155,7 @@ export class VaultIndex {
     this.version++;
     const old = this.entries.get(entry.path);
     if (old && old.kind === 'folder' && entry.kind !== 'folder') this.removeTree(entry.path);
+    if (entry.kind === 'folder' && old?.kind !== 'folder') this.gens.set(entry.path, this.nextGen++);
     this.entries.set(entry.path, entry);
     const parent = parentOf(entry.path);
     if (!this.children.has(parent)) this.children.set(parent, new Set());
@@ -155,6 +173,7 @@ export class VaultIndex {
     for (const child of [...(this.children.get(p) ?? [])]) this.removeTree(child);
     this.children.delete(p);
     this.entries.delete(p);
+    this.gens.delete(p);
     this.children.get(parentOf(p))?.delete(p);
     for (const k of linkKey(e)) this.byName.get(k)?.delete(p);
   }
@@ -171,16 +190,26 @@ export class VaultIndex {
     return next;
   }
 
-  private async doRefresh(p: string): Promise<void> {
+  private async doRefresh(p: string, attempt = 0): Promise<void> {
     if (p === '') return;
+    const parent = parentOf(p);
+    const gen = this.folderGen(parent);
     const entry = await this.load(p);
     if (!entry) {
       this.removeTree(p);
       return;
     }
-    // Make sure the parent chain is indexed.
-    const parent = parentOf(p);
-    if (parent !== '' && !this.entries.has(parent)) await this.doRefresh(parent);
+    if (gen === undefined || this.folderGen(parent) !== gen) {
+      // The parent wasn't an indexed folder when we started, or was removed, recreated or replaced
+      // while we read `p`. Bring the parent up to date (through its own queue), then read `p` again
+      // under it; if it is no folder now, `p` can't be in the index either.
+      if (gen === undefined) await this.refresh(parent);
+      if (this.folderGen(parent) === undefined || attempt >= 5) {
+        this.removeTree(p);
+        return;
+      }
+      return this.doRefresh(p, attempt + 1);
+    }
     const existed = this.entries.get(p);
     if (existed) for (const k of linkKey(existed)) this.byName.get(k)?.delete(p);
     this.put(entry);

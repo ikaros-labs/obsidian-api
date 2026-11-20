@@ -22,6 +22,7 @@ const HINTS: Record<string, string> = {
   not_a_note: 'spall_read, spall_edit, spall_move and spall_trash take notes and .base files only.',
   invalid_base: 'Nothing was written. Fix the YAML and retry; spall_read view=outline shows the current views.',
   rate_limited: 'Wait retry_after seconds, then retry.',
+  audit_unavailable: 'Nothing was changed: the server cannot write its audit log. Retry later.',
   unauthorized: 'The token is missing, invalid or expired.',
 };
 

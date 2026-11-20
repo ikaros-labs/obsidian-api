@@ -204,8 +204,10 @@ describe('/mcp', () => {
     await c.close();
     const lines = readFileSync(env.auditPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
     expect(lines).toEqual([
-      expect.objectContaining({ account: 'agent', op: 'patch', path: 'Research/Plan.md', via: 'mcp/spall_edit', old_rev: data.rev, new_rev: edited.rev }),
-      expect.objectContaining({ account: 'agent', op: 'create', path: 'Research/From MCP.md', via: 'mcp/spall_create' }),
+      expect.objectContaining({ phase: 'intent', account: 'agent', op: 'patch', path: 'Research/Plan.md', via: 'mcp/spall_edit', old_rev: data.rev, new_rev: edited.rev }),
+      expect.objectContaining({ phase: 'result', op: 'patch', outcome: 'ok' }),
+      expect.objectContaining({ phase: 'intent', account: 'agent', op: 'create', path: 'Research/From MCP.md', via: 'mcp/spall_create' }),
+      expect.objectContaining({ phase: 'result', op: 'create', outcome: 'ok', path: 'Research/From MCP.md' }),
     ]);
   });
 
@@ -218,8 +220,8 @@ describe('/mcp', () => {
       payload: { folder: 'Research', title: 'Spoof' },
     });
     expect(res.statusCode).toBe(201);
-    const line = JSON.parse(readFileSync(env.auditPath, 'utf8').trim());
-    expect(line).toMatchObject({ op: 'create' });
+    const line = JSON.parse(readFileSync(env.auditPath, 'utf8').trim().split('\n')[0]!);
+    expect(line).toMatchObject({ phase: 'intent', op: 'create' });
     expect(line).not.toHaveProperty('via');
   });
 

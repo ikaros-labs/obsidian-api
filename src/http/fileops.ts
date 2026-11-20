@@ -5,6 +5,7 @@ import { ApiError, alreadyExists, forbidden, invalidRequest, notFound } from '..
 import { analyzeNote, splitFrontmatter } from '../markdown.js';
 import { join, parsePlainPath, withMdExtension } from '../paths.js';
 import { revOf } from '../vault-index.js';
+import { PartialMoveError } from '../vault.js';
 import { Ctx, etag, iso, parse, parseEtagList, header, project } from './context.js';
 
 /** Shared write logic for /notes and /files. `note` switches on markdown-aware responses. */
@@ -106,7 +107,7 @@ export async function putFile(ctx: Ctx, segs: string[], data: Buffer, reply: Fas
   const ifMatch = parseEtagList(header(ctx.req, 'if-match'));
   const ifNoneMatch = parseEtagList(header(ctx.req, 'if-none-match'));
 
-  return vault.locks.run([join(segs)], async () => {
+  return vault.exclusive(async () => {
     const real = await vault.resolve(segs);
     const perms = effectivePerms(ctx, segs, real);
     const existing = await vault.kindOf(real);
@@ -125,8 +126,7 @@ export async function putFile(ctx: Ctx, segs: string[], data: Buffer, reply: Fas
       if (!perms.has('update')) throw forbidden('update');
       const oldRev = revOf(await vault.read(real));
       checkIfMatch(ifMatch, oldRev);
-      await vault.overwrite(real, data);
-      await ctx.audit('update', real, { old_rev: oldRev, new_rev: revOf(data) });
+      await ctx.audited('update', real, { old_rev: oldRev, new_rev: revOf(data) }, () => vault.overwrite(real, data));
       created = false;
     } else {
       if (!perms.has('create')) throw perms.has('read') ? forbidden('create') : notFound();
@@ -134,8 +134,7 @@ export async function putFile(ctx: Ctx, segs: string[], data: Buffer, reply: Fas
         if (!perms.has('read')) throw notFound();
         checkIfMatch(ifMatch, null);
       }
-      await vault.create(real, data);
-      await ctx.audit('create', real, { new_rev: revOf(data) });
+      await ctx.audited('create', real, { new_rev: revOf(data) }, () => vault.create(real, data));
       created = true;
     }
     const rev = revOf(data);
@@ -152,18 +151,13 @@ export async function deleteFile(ctx: Ctx, segs: string[], reply: FastifyReply) 
   const q = parse(DeleteQuery, ctx.req.query, 'query');
   const permanent = q.permanent === 'true';
   const { vault } = ctx.s;
-  return vault.locks.run([join(segs)], async () => {
+  return vault.exclusive(async () => {
     const real = await ctx.resolve(segs, 'read', permanent ? 'purge' : 'delete');
     if ((await vault.kindOf(real)) !== 'file') throw notFound();
     const rev = revOf(await vault.read(real));
     checkIfMatch(parseEtagList(header(ctx.req, 'if-match')), rev);
-    if (permanent) {
-      await vault.purge(real);
-      await ctx.audit('purge', real, { old_rev: rev });
-    } else {
-      const trashed = await vault.trash(real);
-      await ctx.audit('delete', real, { old_rev: rev, trash: trashed });
-    }
+    if (permanent) await ctx.audited('purge', real, { old_rev: rev }, () => vault.purge(real));
+    else await ctx.audited('delete', real, { old_rev: rev }, async () => ({ trash: await vault.trash(real) }));
     return reply.code(204).send();
   });
 }
@@ -176,16 +170,16 @@ export const MoveBody = z.strictObject({
 export async function moveFile(ctx: Ctx, segs: string[], body: unknown, kind: Kind) {
   const b = parse(MoveBody, body);
   const { vault } = ctx.s;
-  let dest = ctx.toVault(parsePlainPath(b.destination));
-  // "Folder/" or an existing folder the account can see: move into it, keeping the file name.
-  const intoFolder =
-    /\/\s*$/.test(b.destination) ||
-    (dest.length > ctx.account.root.length && ctx.perms(dest).size > 0 && (await vault.kindOf(await vault.resolve(dest))) === 'folder');
-  if (intoFolder) dest = [...dest, segs.at(-1)!];
-  else if (kind.note) dest = withMdExtension(dest);
-  if (dest.length === ctx.account.root.length) throw new ApiError(400, 'invalid_path', 'A destination file path is required');
+  return vault.exclusive(async () => {
+    let dest = ctx.toVault(parsePlainPath(b.destination));
+    // "Folder/" or an existing folder the account can see: move into it, keeping the file name.
+    const intoFolder =
+      /\/\s*$/.test(b.destination) ||
+      (dest.length > ctx.account.root.length && ctx.perms(dest).size > 0 && (await vault.kindOf(await vault.resolve(dest))) === 'folder');
+    if (intoFolder) dest = [...dest, segs.at(-1)!];
+    else if (kind.note) dest = withMdExtension(dest);
+    if (dest.length === ctx.account.root.length) throw new ApiError(400, 'invalid_path', 'A destination file path is required');
 
-  return vault.locks.run([join(segs), join(dest)], async () => {
     const real = await ctx.resolve(segs, 'read', 'update', 'delete');
     if ((await vault.kindOf(real)) !== 'file') throw notFound();
     let realDest = await vault.resolve(dest);
@@ -197,8 +191,16 @@ export async function moveFile(ctx: Ctx, segs: string[], body: unknown, kind: Ki
       realDest = await vault.freePath(realDest);
     }
     const rev = revOf(await vault.read(real));
-    await vault.move(real, realDest);
-    await ctx.audit('move', real, { destination: join(realDest), rev });
+    try {
+      await ctx.audited('move', real, { destination: join(realDest), rev }, () => vault.move(real, realDest));
+    } catch (e) {
+      // Audited as a failed move with error move_incomplete.
+      if (!(e instanceof PartialMoveError)) throw e;
+      throw new ApiError(500, 'internal', 'The file was linked at the destination, but neither name could be removed: it is now at both paths', {
+        path: ctx.toApi(real),
+        destination: ctx.toApi(realDest),
+      });
+    }
     if (!destPerms.has('read')) return { path: ctx.toApi(realDest), rev };
     return kind.note
       ? noteJson(ctx, realDest, (await vault.read(realDest)).toString('utf8'))

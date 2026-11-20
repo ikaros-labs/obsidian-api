@@ -92,16 +92,59 @@ export class Ctx {
     return real;
   }
 
-  audit(op: string, path: string | Segs, extra: Record<string, unknown> = {}): Promise<void> {
-    return this.s.audit.write({
-      account: this.account.name,
-      token: this.token.name,
-      op,
-      path: typeof path === 'string' ? path : join(path),
-      ...(this.req.via ? { via: this.req.via } : {}),
-      ...extra,
-    });
+  /**
+   * Runs a vault change between two audit log lines (B9 in docs/STATE-MACHINES.md). Before it, an
+   * intent line: request id, account, token, op, path and `intent`. After it, a result line with
+   * the same request id: `outcome: ok` plus what `change` returned, or `outcome: failed` and the
+   * error code. If the intent line can't be written, nothing is changed and the request fails with
+   * `audit_unavailable`. If only the result line can't be written, the change is already on record
+   * through its intent, so the real outcome stands and the failure is logged.
+   */
+  async audited(
+    op: string,
+    path: string | Segs,
+    intent: Record<string, unknown>,
+    change: () => Promise<Record<string, unknown> | void>,
+  ): Promise<void> {
+    const line = { request: this.req.id, op };
+    try {
+      await this.s.audit.write({
+        ...line,
+        phase: 'intent',
+        account: this.account.name,
+        token: this.token.name,
+        path: typeof path === 'string' ? path : join(path),
+        ...(this.req.via ? { via: this.req.via } : {}),
+        ...intent,
+      });
+    } catch (e) {
+      this.req.log.error({ err: e }, 'audit log not writable: write refused');
+      throw new ApiError(500, 'audit_unavailable', 'The audit log cannot be written, so nothing was changed');
+    }
+    let result: Record<string, unknown> | void;
+    try {
+      result = await change();
+    } catch (e) {
+      await this.auditResult({ ...line, phase: 'result', outcome: 'failed', error: errorCode(e) });
+      throw e;
+    }
+    await this.auditResult({ ...line, phase: 'result', outcome: 'ok', ...result });
   }
+
+  private async auditResult(entry: Record<string, unknown>): Promise<void> {
+    try {
+      await this.s.audit.write(entry);
+    } catch (e) {
+      this.req.log.error({ err: e, audit: entry }, 'audit log not writable: result line lost (its intent line is on record)');
+    }
+  }
+}
+
+/** The code a failed change is recorded with: the API error code, else the system error code. */
+function errorCode(e: unknown): string {
+  if (e instanceof ApiError) return e.code;
+  const code = (e as { code?: unknown } | null)?.code;
+  return typeof code === 'string' ? code : 'internal';
 }
 
 export function parse<S extends z.ZodType>(schema: S, data: unknown, where = 'body'): z.output<S> {
