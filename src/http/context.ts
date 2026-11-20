@@ -146,18 +146,23 @@ export function negotiate(accept: string | undefined, offers: string[]): string 
   return best?.offer ?? offers[0]!;
 }
 
-/** `fields=path,frontmatter.status` → a copy of `obj` with only those (dotted) fields. */
+/**
+ * `fields=path,frontmatter.status` → a copy of `obj` with only those (dotted) fields. Only own
+ * properties are followed, and `__proto__` is never a field name: the names come from the caller,
+ * so they must not reach anything inherited from Object.prototype.
+ */
 export function project(obj: Record<string, unknown>, fields: string | undefined): Record<string, unknown> {
   if (!fields) return obj;
   const out: Record<string, unknown> = {};
   for (const field of fields.split(',').map((f) => f.trim()).filter(Boolean)) {
     const parts = field.split('.');
+    if (parts.includes('__proto__')) continue;
     let src: unknown = obj;
-    for (const p of parts) src = src && typeof src === 'object' ? (src as Record<string, unknown>)[p] : undefined;
+    for (const p of parts) src = src && typeof src === 'object' && Object.hasOwn(src, p) ? (src as Record<string, unknown>)[p] : undefined;
     if (src === undefined) continue;
     let dst = out;
     parts.slice(0, -1).forEach((p) => {
-      dst[p] = dst[p] && typeof dst[p] === 'object' ? dst[p] : {};
+      if (!Object.hasOwn(dst, p) || !dst[p] || typeof dst[p] !== 'object') dst[p] = {};
       dst = dst[p] as Record<string, unknown>;
     });
     dst[parts.at(-1)!] = src;
