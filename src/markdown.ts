@@ -1,4 +1,4 @@
-import { parseDocument } from 'yaml';
+import { isScalar, parseDocument, visit, YAMLParseError, type Document } from 'yaml';
 
 export type Frontmatter = Record<string, unknown>;
 
@@ -47,10 +47,38 @@ export function joinFrontmatter(frontmatterRaw: string | null, body: string, fen
   return `${fences?.open ?? '---\n'}${fm}${close}${body}`;
 }
 
+/**
+ * Parses YAML written by an account. The library's own duplicate-key check compares every key of a
+ * map with every other one, which is quadratic; here duplicates are found with one Set per map and
+ * reported as errors in the same way.
+ */
+export function parseYaml(text: string): Document.Parsed {
+  const doc = parseDocument(text, { uniqueKeys: false });
+  if (doc.errors.length > 0) return doc;
+  let duplicate: string | null = null;
+  visit(doc, {
+    Map(_, map) {
+      const seen = new Set<string>();
+      for (const { key } of map.items) {
+        if (!isScalar(key)) continue;
+        const id = `${typeof key.value}:${String(key.value)}`;
+        if (seen.has(id)) {
+          duplicate = String(key.value);
+          return visit.BREAK;
+        }
+        seen.add(id);
+      }
+      return undefined;
+    },
+  });
+  if (duplicate !== null) doc.errors.push(new YAMLParseError([0, 0], 'DUPLICATE_KEY', `Map keys must be unique: ${duplicate}`));
+  return doc;
+}
+
 /** Parses frontmatter YAML. Returns null if it is not valid YAML or not a mapping. */
 export function parseFrontmatter(raw: string | null): Frontmatter | null {
   if (raw === null) return {};
-  const doc = parseDocument(raw);
+  const doc = parseYaml(raw);
   if (doc.errors.length > 0) return null;
   const value: unknown = doc.toJS();
   if (value === null || value === undefined) return {};
@@ -97,14 +125,29 @@ export interface Heading {
   chain: string[];
 }
 
-const HEADING_RE = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/;
+const isBlank = (c: string | undefined) => c === ' ' || c === '\t';
+
+/**
+ * The text of an ATX heading line after its `#`s: surrounding spaces and a closing run of `#`s
+ * (when a space precedes it) removed. Done by hand: a regex with a lazy group before the trailing
+ * blanks rescans a long run of spaces from every position.
+ */
+function headingText(rest: string): string {
+  let end = rest.length;
+  while (end > 0 && isBlank(rest[end - 1])) end--;
+  let hashes = end;
+  while (hashes > 0 && rest[hashes - 1] === '#') hashes--;
+  if (hashes < end && (hashes === 0 || isBlank(rest[hashes - 1]))) end = hashes;
+  return rest.slice(0, end).trim();
+}
+
+const HEADING_RE = /^ {0,3}(#{1,6})(?=[ \t]|$)/;
 
 export function headingOf(line: Line): { level: number; text: string } | null {
   if (line.code) return null;
   const m = HEADING_RE.exec(line.text);
   if (!m) return null;
-  const text = (m[2] ?? '').replace(/(^|[ \t]+)#+$/, '').trim();
-  return { level: m[1]!.length, text };
+  return { level: m[1]!.length, text: headingText(line.text.slice(m[0].length)) };
 }
 
 export function findHeadings(lines: Line[]): Heading[] {
@@ -171,7 +214,68 @@ export interface RawLink {
 }
 
 const WIKI_RE = /!?\[\[([^[\]]+?)\]\]/g;
-const MD_LINK_RE = /!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g;
+
+/**
+ * Targets of the inline markdown links in one line: `[label](target)`, `[label](<target> "title")`.
+ * The label may not contain `]`. Equivalent to matching
+ * `\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)` from left to right, but in one pass: the
+ * regex rescans the rest of the line from every `[` (and every `](`), which is quadratic on a line an
+ * account fills with them. Each kind of run is remembered, so no stretch of the line is read twice.
+ */
+function mdLinkTargets(text: string): string[] {
+  const out: string[] = [];
+  const isSpace = (i: number) => i < text.length && /\s/.test(text[i]!);
+  const isTarget = (i: number) => i < text.length && !/[)\s>]/.test(text[i]!);
+  /** `end(i)`: the first index at or after `i` where `test` fails, remembering the last run. */
+  const runs = (test: (i: number) => boolean) => {
+    let from = 0;
+    let to = -1;
+    return (i: number) => {
+      if (i >= from && i <= to) return to;
+      from = i;
+      to = i;
+      while (test(to)) to++;
+      return to;
+    };
+  };
+  const spaces = runs(isSpace);
+  const target = runs(isTarget);
+  const untilQuote = runs((i) => i < text.length && text[i] !== '"');
+
+  /** Parses `(target "title")` at `open`; returns the target and the index after `)`, or null. */
+  const tail = (open: number): { href: string; end: number } | null => {
+    let i = spaces(open + 1);
+    // `<` opens the target unless nothing follows it, in which case it is the target.
+    if (text[i] === '<' && isTarget(i + 1)) i++;
+    const end = target(i);
+    if (end === i) return null;
+    const href = text.slice(i, end);
+    i = text[end] === '>' ? end + 1 : end;
+    const afterSpaces = spaces(i);
+    if (afterSpaces > i && text[afterSpaces] === '"') {
+      const close = untilQuote(afterSpaces + 1);
+      if (close < text.length) {
+        const j = spaces(close + 1);
+        if (text[j] === ')') return { href, end: j + 1 };
+      }
+    }
+    return text[afterSpaces] === ')' ? { href, end: afterSpaces + 1 } : null;
+  };
+
+  let labelOpen = false;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '[') labelOpen = true;
+    else if (text[i] === ']') {
+      const link = labelOpen && text[i + 1] === '(' ? tail(i + 1) : null;
+      labelOpen = false;
+      if (link) {
+        out.push(link.href);
+        i = link.end - 1;
+      }
+    }
+  }
+  return out;
+}
 
 /**
  * A property value that is a whole wikilink (`"[[X]]"`, `"[[X|alias]]"`), which Obsidian treats as a
@@ -213,8 +317,7 @@ export function extractLinks(lines: Line[], frontmatterTargets: string[] = []): 
     if (line.code) continue;
     const text = stripInlineCode(line.text);
     for (const m of text.matchAll(WIKI_RE)) add(m[1]!.split('|')[0]!.split(/[#^]/)[0]!, 'wiki');
-    for (const m of text.matchAll(MD_LINK_RE)) {
-      const href = m[1]!;
+    for (const href of mdLinkTargets(text)) {
       if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('#')) continue;
       let decoded = href.split('#')[0]!;
       try {

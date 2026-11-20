@@ -8,6 +8,7 @@ import {
   findHeadings,
   headingOf,
   joinFrontmatter,
+  parseYaml,
   scanLines,
   splitFrontmatter,
   type Line,
@@ -87,7 +88,7 @@ const lineEnd = (s: string, pos: number) => {
  * not a plain block mapping; the caller then falls back to re-serializing.
  */
 function editRaw(raw: string, key: string, value: unknown | undefined): string | null {
-  const doc = parseDocument(raw);
+  const doc = parseYaml(raw);
   const map = doc.contents;
   if (!isMap(map) || map.flow) return null;
   const eol = raw.includes('\r\n') ? '\r\n' : '\n';
@@ -133,7 +134,7 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 
 /** The frontmatter as plain data, or null when it doesn't parse fully (errors, dangling aliases). */
 function plainData(raw: string): Record<string, unknown> | null {
-  const doc = parseDocument(raw);
+  const doc = parseYaml(raw);
   if (doc.errors.length > 0) return null;
   try {
     const v: unknown = doc.toJS();
@@ -166,7 +167,7 @@ function referencedAnchors(doc: Document, node: unknown): string[] {
 
 function applyFrontmatterOp(text: string, op: Extract<PatchOp, { op: `frontmatter.${string}` }>): string {
   const { frontmatterRaw, body, fences } = splitFrontmatter(text);
-  const doc = frontmatterRaw === null ? new Document({}) : parseDocument(frontmatterRaw);
+  const doc = frontmatterRaw === null ? new Document({}) : parseYaml(frontmatterRaw);
   if (doc.errors.length > 0) throw invalidRequest('The note has invalid frontmatter YAML; fix it with PUT or replace_text');
   if (doc.contents === null) doc.contents = doc.createNode({});
   if (!isMap(doc.contents)) throw invalidRequest('The note frontmatter is not a key/value mapping');
@@ -203,7 +204,7 @@ function applyFrontmatterOp(text: string, op: Extract<PatchOp, { op: `frontmatte
     raw = doc.toString(STRINGIFY);
     if (!isExactly(raw, before, changes)) throw invalidRequest('The frontmatter change could not be applied exactly; nothing was written');
   }
-  const after = parseDocument(raw).contents;
+  const after = parseYaml(raw).contents;
   return joinFrontmatter(after === null || (isMap(after) && after.items.length === 0) ? null : raw, body, fences);
 }
 

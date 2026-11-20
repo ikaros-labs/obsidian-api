@@ -1,7 +1,7 @@
 import { compileExpression, compileFilter, type FilterExpression } from 'obsidian-bases-expression';
-import { parseDocument } from 'yaml';
 import { z } from 'zod';
 import { ApiError } from '../errors.js';
+import { parseYaml } from '../markdown.js';
 import type { Diagnostic, SortSpec } from './engine.js';
 
 const Direction = z
@@ -48,7 +48,7 @@ export interface BaseFile {
 const invalidBase = (message: string, details?: Record<string, unknown>) => new ApiError(422, 'invalid_base', message, details);
 
 export function parseBase(text: string): BaseFile {
-  const doc = parseDocument(text);
+  const doc = parseYaml(text);
   if (doc.errors.length > 0) throw invalidBase(`The base is not valid YAML: ${doc.errors[0]!.message}`);
   const r = BaseSchema.safeParse(doc.toJS() ?? {});
   if (!r.success) {
