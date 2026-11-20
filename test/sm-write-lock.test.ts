@@ -15,7 +15,23 @@ afterEach(async () => {
 });
 
 const md = { 'content-type': 'text/markdown' };
-const tick = (ms = 150) => new Promise((r) => setTimeout(r, ms));
+/**
+ * Resolves when the next request asks for the vault write lock (it is then queued behind the parked
+ * one). Without such a lock it never resolves; the competing request then simply completes.
+ */
+function nextQueued(env: TestEnv): Promise<void> {
+  const vault = (env.app as { vault?: { exclusive: (fn: () => Promise<unknown>) => Promise<unknown> } }).vault;
+  return new Promise((resolve) => {
+    if (!vault) return;
+    const orig = vault.exclusive.bind(vault);
+    vault.exclusive = (fn) => {
+      vault.exclusive = orig;
+      const p = orig(fn);
+      resolve();
+      return p;
+    };
+  });
+}
 
 /** Parks the first call of `proto[name]` until `release()`; later calls pass straight through. */
 function park<T extends object>(proto: T, name: keyof T) {
@@ -52,8 +68,9 @@ describe('B1 folder delete vs a concurrent write inside it', () => {
     try {
       const del = env.req('cleaner', { method: 'DELETE', url: '/v1/folders/Box?recursive=true&permanent=true' });
       await p.parked; // the check passed: everything in Box is visible to cleaner and purgeable
+      const queued = nextQueued(env);
       const put = env.req('owner', { method: 'PUT', url: '/v1/notes/Box/Private/secret', headers: md, payload: 'mine' });
-      await Promise.race([put, tick()]);
+      await Promise.race([put, queued]);
       p.release();
       expect((await del).statusCode).toBe(204);
       expect((await put).statusCode).toBe(201);
@@ -78,8 +95,9 @@ describe('B2 two edits of one note through a symlink alias', () => {
     try {
       const a = patch('/v1/notes/Research/Plan', 'from_real_path');
       await p.parked; // a read the note and is about to write it
+      const queued = nextQueued(env);
       const b = patch('/v1/notes/Alias/Plan', 'from_alias');
-      await Promise.race([b, tick()]);
+      await Promise.race([b, queued]);
       p.release();
       expect((await a).statusCode).toBe(200);
       expect((await b).statusCode).toBe(200);
