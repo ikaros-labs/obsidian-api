@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { analyzeNote, outline, parseFrontmatter } from '../src/markdown.js';
+import { parseDocument } from 'yaml';
+import { analyzeNote, outline, parseFrontmatter, parseYaml } from '../src/markdown.js';
 import { snippetOf } from '../src/search/index.js';
 
 const timed = <T>(fn: () => T): [T, number] => {
@@ -7,6 +8,8 @@ const timed = <T>(fn: () => T): [T, number] => {
   const out = fn();
   return [out, performance.now() - t0];
 };
+
+const libraryDuplicateMessage = parseDocument('a: 1\na: 2\n', { prettyErrors: false }).errors[0]!.message;
 
 // F-04, F-05, F-16: analysing a stored note must cost time linear in its size.
 describe('note analysis cost', () => {
@@ -52,5 +55,37 @@ describe('note analysis cost', () => {
       hs.flatMap((h) => [[h.level, h.text] as [number, string], ...flat(h.children as never)]);
     expect(flat(o.headings as never)).toEqual([[1, 'One'], [2, 'Two'], [3, 'Three#'], [4, '']]);
     expect(snippetOf('## Sec ##  \n\nalpha beta\n', new Set(['alpha'])).heading).toBe('Sec');
+  });
+
+  // Review round: every candidate `](` used to rescan the same run of spaces.
+  it('F-04: many link candidates before one long run of spaces stay linear', () => {
+    for (const text of [`${'[]('.repeat(10000)}${' '.repeat(20000)}x`, `${'[]('.repeat(10000)}a${' '.repeat(10000)}"${'b'.repeat(10000)}`, `${'[](a "'.repeat(8000)}`]) {
+      const [, ms] = timed(() => analyzeNote(`${text}\n`));
+      expect(ms).toBeLessThan(300);
+    }
+  });
+
+  it('F-04: finds the same links as the regex it replaced, on generated lines', () => {
+    const OLD = /!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g;
+    const alphabet = ['[', ']', '(', ')', '<', '>', '"', ' ', '\t', 'a', 'b', '!', '](', '[x](', ' "t"', ')'];
+    let seed = 12345;
+    const rand = (n: number) => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) % n;
+    for (let i = 0; i < 20000; i++) {
+      const line = Array.from({ length: 1 + rand(14) }, () => alphabet[rand(alphabet.length)]).join('');
+      const expected = [...new Set([...line.matchAll(OLD)].map((m) => m[1]!))];
+      const got = analyzeNote(`${line}\n`).links.filter((l) => l.kind === 'md').map((l) => l.target);
+      expect(got, JSON.stringify(line)).toEqual(expected);
+    }
+  });
+
+  // Review round: keys are duplicates exactly when the YAML library says so.
+  it('F-05: duplicate keys follow the library (=== on scalars), and the error quotes nothing', () => {
+    expect(parseFrontmatter('.nan: 1\n.NaN: 2\n')).not.toBeNull();
+    expect(parseFrontmatter('1: a\n"1": b\n')).not.toBeNull();
+    expect(parseFrontmatter('1: a\n1: b\n')).toBeNull();
+    expect(parseFrontmatter('~: a\nnull: b\n')).toBeNull();
+    const errors = parseYaml('"secret words": 1\n"secret words": 2\n').errors;
+    expect(errors.map((e) => e.code)).toEqual(['DUPLICATE_KEY']);
+    expect(errors[0]!.message).toBe(libraryDuplicateMessage);
   });
 });

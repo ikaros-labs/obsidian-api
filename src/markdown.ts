@@ -1,4 +1,4 @@
-import { isScalar, parseDocument, visit, YAMLParseError, type Document } from 'yaml';
+import { isNode, isScalar, parseDocument, visit, YAMLParseError, type Document } from 'yaml';
 
 export type Frontmatter = Record<string, unknown>;
 
@@ -49,21 +49,23 @@ export function joinFrontmatter(frontmatterRaw: string | null, body: string, fen
 
 /**
  * Parses YAML written by an account. The library's own duplicate-key check compares every key of a
- * map with every other one, which is quadratic; here duplicates are found with one Set per map and
- * reported as errors in the same way.
+ * map with every other one, which is quadratic; here duplicates are found with one Set per map.
+ * Keys are equal exactly when the library says so: the same node, or two scalars with `===` values
+ * (so `1` and `"1"` differ, and NaN equals nothing). The error is the library's, at the second key.
  */
 export function parseYaml(text: string): Document.Parsed {
   const doc = parseDocument(text, { uniqueKeys: false });
   if (doc.errors.length > 0) return doc;
-  let duplicate: string | null = null;
   visit(doc, {
     Map(_, map) {
-      const seen = new Set<string>();
+      const seen = new Set<unknown>();
       for (const { key } of map.items) {
-        if (!isScalar(key)) continue;
-        const id = `${typeof key.value}:${String(key.value)}`;
+        const id: unknown = isScalar(key) ? key.value : key;
+        // NaN: `===` never matches it, a Set would.
+        if (id !== id) continue;
         if (seen.has(id)) {
-          duplicate = String(key.value);
+          const range = isNode(key) ? key.range : null;
+          doc.errors.push(new YAMLParseError(range ? [range[0], range[1]] : [0, 0], 'DUPLICATE_KEY', 'Map keys must be unique'));
           return visit.BREAK;
         }
         seen.add(id);
@@ -71,7 +73,6 @@ export function parseYaml(text: string): Document.Parsed {
       return undefined;
     },
   });
-  if (duplicate !== null) doc.errors.push(new YAMLParseError([0, 0], 'DUPLICATE_KEY', `Map keys must be unique: ${duplicate}`));
   return doc;
 }
 
@@ -218,44 +219,44 @@ const WIKI_RE = /!?\[\[([^[\]]+?)\]\]/g;
 /**
  * Targets of the inline markdown links in one line: `[label](target)`, `[label](<target> "title")`.
  * The label may not contain `]`. Equivalent to matching
- * `\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)` from left to right, but in one pass: the
- * regex rescans the rest of the line from every `[` (and every `](`), which is quadratic on a line an
- * account fills with them. Each kind of run is remembered, so no stretch of the line is read twice.
+ * `\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)` from left to right, which rescans the rest of
+ * the line from every `[` (and every `](`): quadratic on a line an account fills with them.
+ *
+ * Linear here because nothing is scanned forward during matching. One backward pass records, for
+ * every index, where the run of spaces, the run of target characters and the stretch up to the next
+ * `"` starting there end; trying a `](` is then a fixed number of lookups, and the cursor of the one
+ * forward loop only ever moves right.
  */
 function mdLinkTargets(text: string): string[] {
   const out: string[] = [];
-  const isSpace = (i: number) => i < text.length && /\s/.test(text[i]!);
-  const isTarget = (i: number) => i < text.length && !/[)\s>]/.test(text[i]!);
-  /** `end(i)`: the first index at or after `i` where `test` fails, remembering the last run. */
-  const runs = (test: (i: number) => boolean) => {
-    let from = 0;
-    let to = -1;
-    return (i: number) => {
-      if (i >= from && i <= to) return to;
-      from = i;
-      to = i;
-      while (test(to)) to++;
-      return to;
-    };
-  };
-  const spaces = runs(isSpace);
-  const target = runs(isTarget);
-  const untilQuote = runs((i) => i < text.length && text[i] !== '"');
+  if (!text.includes('](')) return out;
+  const n = text.length;
+  const spacesEnd = new Uint32Array(n + 1);
+  const targetEnd = new Uint32Array(n + 1);
+  const quoteAt = new Uint32Array(n + 1);
+  spacesEnd[n] = targetEnd[n] = quoteAt[n] = n;
+  for (let i = n - 1; i >= 0; i--) {
+    const c = text[i]!;
+    const space = /\s/.test(c);
+    spacesEnd[i] = space ? spacesEnd[i + 1]! : i;
+    targetEnd[i] = space || c === ')' || c === '>' ? i : targetEnd[i + 1]!;
+    quoteAt[i] = c === '"' ? i : quoteAt[i + 1]!;
+  }
 
   /** Parses `(target "title")` at `open`; returns the target and the index after `)`, or null. */
   const tail = (open: number): { href: string; end: number } | null => {
-    let i = spaces(open + 1);
+    let i = spacesEnd[open + 1]!;
     // `<` opens the target unless nothing follows it, in which case it is the target.
-    if (text[i] === '<' && isTarget(i + 1)) i++;
-    const end = target(i);
+    if (text[i] === '<' && targetEnd[i + 1]! > i + 1) i++;
+    const end = targetEnd[i]!;
     if (end === i) return null;
     const href = text.slice(i, end);
     i = text[end] === '>' ? end + 1 : end;
-    const afterSpaces = spaces(i);
+    const afterSpaces = spacesEnd[i]!;
     if (afterSpaces > i && text[afterSpaces] === '"') {
-      const close = untilQuote(afterSpaces + 1);
-      if (close < text.length) {
-        const j = spaces(close + 1);
+      const close = quoteAt[afterSpaces + 1]!;
+      if (close < n) {
+        const j = spacesEnd[close + 1]!;
         if (text[j] === ')') return { href, end: j + 1 };
       }
     }
@@ -263,7 +264,7 @@ function mdLinkTargets(text: string): string[] {
   };
 
   let labelOpen = false;
-  for (let i = 0; i < text.length; i++) {
+  for (let i = 0; i < n; i++) {
     if (text[i] === '[') labelOpen = true;
     else if (text[i] === ']') {
       const link = labelOpen && text[i + 1] === '(' ? tail(i + 1) : null;
