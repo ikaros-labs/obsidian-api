@@ -13,14 +13,6 @@ import { cursorKey, page, sample } from './paging.js';
 
 const PREFIX = '/v1/bases/';
 
-/** A number per config object, so a reload (which may change access) invalidates cached state. */
-const generations = new WeakMap<object, number>();
-let nextGeneration = 0;
-function configGeneration(config: object): number {
-  if (!generations.has(config)) generations.set(config, nextGeneration++);
-  return generations.get(config)!;
-}
-
 const QueryCommon = {
   filters: z.unknown().optional(),
   sort: z.array(SortSchema).optional(),
@@ -87,11 +79,11 @@ async function respond(
   meta: { cursorParts: unknown[]; names: (id: string) => string; thisFile?: Entry; head: Record<string, unknown> },
 ) {
   const propertyTypes = await ctx.s.propertyTypes.load();
-  // Same index, types and access → the per-file inputs built by earlier queries are still valid.
-  const stateKey = JSON.stringify([ctx.s.index.version, propertyTypes, configGeneration(ctx.s.config())]);
+  // Same index, types and Account (so: same access) → the per-file inputs built by earlier queries are still valid.
+  const stateKey = JSON.stringify([ctx.s.index.version, propertyTypes]);
   const engine = new BasesEngine(
     { index: ctx.s.index, visible: ctx.visible, propertyTypes },
-    ctx.s.engineCache.get(ctx.account.name, stateKey),
+    ctx.s.engineCache.get(ctx.account, stateKey),
   );
   const toApiPath = (p: string) => ctx.toApi(p);
   const result = engine.run(rows, spec, { thisFile: meta.thisFile, toApiPath });

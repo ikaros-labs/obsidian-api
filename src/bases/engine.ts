@@ -314,11 +314,16 @@ export class EngineState {
   backlinks: Map<string, { path: string }[]> | null = null;
 }
 
-/** One `EngineState` per account, rebuilt when its key changes. */
+/**
+ * One `EngineState` per Account object, rebuilt when its key changes. The state holds what that
+ * account can see, so it is tied to the object the access rules came from: a config reload makes
+ * new Account objects, and a request that was authenticated before the reload can't leave its
+ * state behind for requests after it.
+ */
 export class EngineCache {
-  private readonly states = new Map<string, { key: string; state: EngineState }>();
+  private readonly states = new WeakMap<object, { key: string; state: EngineState }>();
 
-  get(account: string, key: string): EngineState {
+  get(account: object, key: string): EngineState {
     const hit = this.states.get(account);
     if (hit?.key === key) return hit.state;
     const state = new EngineState();
