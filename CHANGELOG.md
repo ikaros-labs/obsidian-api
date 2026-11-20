@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+Security fixes from the 2026-11-20 audit.
+
+- **Fix: `fields` could write to `Object.prototype`.** A note with a `__proto__` frontmatter key, read with `fields=frontmatter.__proto__.x`, set `x` on every object in the server process; with `authorization` this made requests without a token authenticate. `fields` now follows own properties only.
+- **Fix: requests and stored notes that blocked the server.** One request or note could hold the event loop every account shares for seconds to minutes: a `where` value of spaces, a line of `[`, frontmatter with thousands of keys, a heading followed by a long run of spaces, and Bases filters or formulas such as a backtracking regex. These are parsed in linear time now, and one query's Bases expressions get 1 s and results of at most 100,000 characters or items (400 `invalid_request`, or a value error in `diagnostics`).
+- **Fix: creating and deleting the same folder at once could stop the server** (an unhandled promise rejection in the index).
+- **Fix: hidden folders could be told from missing ones.** `<folder>/<300 characters>` answered 500 when the folder existed. Path segments over 255 bytes are now a 400, and a path an account has no permissions on is not looked up on disk.
+- **Fix: `on_conflict: rename` only picks names the account may create.** It skipped a denied `Name 1` that existed and wrote to it when it did not.
+- **Fix: with `follow_symlinks`, `POST /v1/notes`, `POST /v1/folders` and recursive folder delete check the path as requested and the symlink target**, like every other route.
+- **Fix: recursive folder delete could trash a note written into the folder while it ran.** It now holds the whole folder until it is done.
+- **Fix: a reload always applies token and grant changes.** A pending change to `server` or `vault` settings no longer makes the whole reload fail (those settings still need a restart, and the log says so), and a config path that is a symlink is followed again when it is re-pointed.
+- **Fix: a token `expires` that is not a real date (`2027-13-01`) is a config error.** It used to mean "never expires".
+- **Fix: a Bases query held open across a reload no longer keeps the account's old access** in the query cache.
+- **Fix: more of what the MCP tools return is fenced**: frontmatter keys, block ids, a base's view names, filters and column names, Bases diagnostics, and error details. A frontmatter object such as `{type: Error, value: …}` is plain data in Bases.
+- **Fix: `/v1/stats?tz=` no longer keeps a formatter for every spelling of a time zone.**
+
 ## 1.2.3 — 2026-11-19
 
 - **Fix: bases `<`, `>`, `<=`, `>=` with an empty value, as in Obsidian.** An empty side (`Key:` or a missing property) counted as 0, so `Completed < date("2026-01-01")` matched notes with no `Completed` and `Score < 5` matched notes with no `Score`. Now a comparison with an empty side is empty, as in Obsidian: it doesn't match as a filter, `!(…)` of it does, and a formula `Score < 5` shows `null`. Other comparisons follow Obsidian too: a string right of a date or duration is read as one (`Completed < "2026-01-01"`), and a mixed comparison is plain JavaScript (`""` is a string, not empty, so `"" < date(…)` is true). Applies to `.base` views, `/v1/query`, `spall_query_base` and `spall base`.

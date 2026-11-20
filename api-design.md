@@ -347,7 +347,7 @@ accounts:
 ```
 
 - **Strict validation.** A zod schema rejects unknown keys and wrong types at startup. The same schema is exported as JSON Schema, so your editor can autocomplete the config.
-- **Hot reload.** The config reloads when the file changes or on SIGHUP. If the new version is invalid, the server keeps the old one and logs the error.
+- **Hot reload.** The config reloads when the file changes or on SIGHUP. If the new version is invalid, the server keeps the old one and logs the error. `server` and `vault.path`/`trash`/`follow_symlinks` only change at a restart; a reload keeps the running values and applies the rest, so a revoked token stops working at once.
 - **Tokens.**
   - Tokens look like `spl_` + 43 base64url characters (256 random bits). The prefix lets secret scanners spot a leaked token.
   - The config stores only a SHA-256 hash of each token. Because the tokens are high-entropy, a slow hash like bcrypt isn't needed.
