@@ -16,6 +16,17 @@ Security fixes from the 2026-11-20 audit.
 - **Fix: more of what the MCP tools return is fenced**: frontmatter keys, block ids, a base's view names, filters and column names, Bases diagnostics, and error details. A frontmatter object such as `{type: Error, value: …}` is plain data in Bases.
 - **Fix: `/v1/stats?tz=` no longer keeps a formatter for every spelling of a time zone.**
 
+Follow-ups from the review of those fixes.
+
+- **`on_conflict: rename` answers with what the account may see of the name it got.** A create or move that landed on `Name 1` used the permissions of `Name` to decide between the full note and `{path, rev}`.
+- **Bases: one time budget per query, and sizes are checked before the value is built.** The 1 s covers compiling, filtering, sorting and the page's columns together (it was 1 s for each of two phases). `repeat`, `replace` and `join` are refused before they allocate, nested lists count towards the 100,000 limit, and one expression may build 10 million characters and items per row at most. A query whose sort, group or column values add up to more than 20 million is a 400.
+- **Fix: a line of `[](` followed by a long run of spaces still took quadratic time** to scan for links.
+- **Fix: frontmatter with `.nan` keys, or keys that differ only in type, was wrongly called a duplicate.** Duplicate keys are found as the YAML library finds them.
+- **`invalid_base` for YAML that doesn't parse: the parser's message moved from `message` to `details.yaml_error`.** The message is now always `The base is not valid YAML`. The MCP tools fence all details of an `invalid_base` error.
+- **Fix: Bases treated frontmatter with top-level `type` and `value` keys as one value** instead of two properties.
+- **Fix: `frontmatter.merge` with a nested `__proto__` key dropped the key** and changed the merged object's prototype. Keys are own properties now, whatever they are called.
+- **Fix: a reload that moved to a config location that can't be watched threw after applying the config** and stopped watching altogether. It now logs the problem and keeps the previous watch.
+
 State-machine fixes.
 
 - **Fix: a recursive folder delete could remove a file written after its permission check.** Writes now run one at a time under a vault-wide lock, so another account's note created inside the folder while the delete ran is no longer purged or trashed by an account that can't see it. The same lock stops two edits of one note through a symlink alias (with `follow_symlinks`) from losing one of them.

@@ -172,7 +172,7 @@ A path under `/v1/notes/` that names a visible non-note file (`Reading List.base
 
 A `.md` file can also be reached here as plain bytes.
 
-A `PUT` of a `.base` file is validated first: it must be YAML with a valid base structure, and every filter and formula expression must parse. Otherwise it returns 422 `invalid_base` (with `details.diagnostics` for expressions) and nothing is written. This is how `.base` files are edited; create and update grants apply as for notes.
+A `PUT` of a `.base` file is validated first: it must be YAML with a valid base structure, and every filter and formula expression must parse. Otherwise it returns 422 `invalid_base` (with `details.yaml_error` for YAML that doesn't parse, `details.issues` for the structure and `details.diagnostics` for expressions) and nothing is written. This is how `.base` files are edited; create and update grants apply as for notes.
 
 ### Folders
 
@@ -512,6 +512,7 @@ Response for the "To read" view:
   - A filter that reads a note property none of the queried notes has gets a diagnostic, naming the property with the same name in another case if there is one: `Unknown property "status": no queried note has it. Did you mean "Status"?`
   - Runtime failures are counted per expression: `{ where, message, rows }`.
   - A `.base` file that isn't valid YAML returns 422 `invalid_base`.
+  - Expressions have limits, because every account shares one process: a query gets 1 s of evaluation in total (compiling, filtering, sorting and the page's columns together; over it: 400 `invalid_request`), and a value an expression builds may hold at most 100,000 characters and items (over it: a value error in `diagnostics`).
 - **No view at all:** a base without `views` runs its global filters, with `file.name` plus the keys of `properties` as columns.
 
 ### `POST /v1/query`
