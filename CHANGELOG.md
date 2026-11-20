@@ -4,7 +4,6 @@
 
 Security fixes from the 2026-11-20 audit.
 
-- **Fix: `fields` could write to `Object.prototype`.** A note with a `__proto__` frontmatter key, read with `fields=frontmatter.__proto__.x`, set `x` on every object in the server process; with `authorization` this made requests without a token authenticate. `fields` now follows own properties only.
 - **Fix: requests and stored notes that blocked the server.** One request or note could hold the event loop every account shares for seconds to minutes: a `where` value of spaces, a line of `[`, frontmatter with thousands of keys, a heading followed by a long run of spaces, and Bases filters or formulas such as a backtracking regex. These are parsed in linear time now, and one query's Bases expressions get 1 s and results of at most 100,000 characters or items (400 `invalid_request`, or a value error in `diagnostics`).
 - **Fix: creating and deleting the same folder at once could stop the server** (an unhandled promise rejection in the index).
 - **Fix: hidden folders could be told from missing ones.** `<folder>/<300 characters>` answered 500 when the folder existed. Path segments over 255 bytes are now a 400, and a path an account has no permissions on is not looked up on disk.
@@ -36,6 +35,10 @@ State-machine fixes.
 - **Fix: a move whose source couldn't be removed left the file under both names** (and could answer 409 for its own destination). The new name is removed again and the error is returned, so a retry starts clean.
 - **Fix: a write whose audit line failed returned 500 although it had happened,** so a retried `POST /v1/notes` made a duplicate note. **The audit log format changes:** each write now logs two lines with the same `request` id. An `intent` line (account, token, op, path, revs) is written before the vault is touched, and a `result` line (`outcome: ok`, or `failed` with an `error` code) after. If the intent can't be written, the write is refused with 500 `audit_unavailable` and nothing changes, so a retry is safe. If only the result can't be written, the client gets the real outcome and the server logs an error. A move that leaves the file at both paths is now logged as a failed `move` with `error: move_incomplete`. Tools that read the audit log should join the two lines on `request`; an intent with no result means the outcome is unknown.
 - **Fix: a deleted folder could leave a ghost entry** in search, tags, bases and backlinks when a file inside it was being re-indexed at the same moment.
+
+## 1.2.4 — 2026-11-20
+
+- **Security fix: `fields` reads only the response's own data.** A crafted `fields` value (REST `fields=`, and the MCP tools and CLI flags that pass it on) could reach past the response into shared process state and weaken authentication. `fields` now follows only the response's own properties. Upgrade from 1.2.3.
 
 ## 1.2.3 — 2026-11-19
 
