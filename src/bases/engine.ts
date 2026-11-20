@@ -9,6 +9,8 @@ import {
   durationToMilliseconds,
   Evaluator,
   frontmatterLink,
+  fromJs,
+  objectValue,
   nullValue,
   boolValue,
   parseDuration,
@@ -315,6 +317,20 @@ export class EngineState {
 }
 
 /**
+ * Frontmatter as the library may read it. The library takes any object with `type` and `value` keys
+ * for one of its own runtime values, so `status: {type: Error, value: {message: …}}` in a note would
+ * be an error with that message, and `{type: Date, value: x}` a broken date. Such an object is
+ * handed over as an explicit Object value instead: frontmatter is only ever data.
+ */
+function asData(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(asData);
+  if (v === null || typeof v !== 'object' || v instanceof Date) return v;
+  const entries = Object.entries(v).map(([k, x]) => [k, asData(x)] as const);
+  if (!('type' in v && 'value' in v)) return Object.fromEntries(entries);
+  return objectValue(Object.fromEntries(entries.map(([k, x]) => [k, fromJs(x)])));
+}
+
+/**
  * One `EngineState` per Account object, rebuilt when its key changes. The state holds what that
  * account can see, so it is tied to the object the access rules came from: a config reload makes
  * new Account objects, and a request that was authenticated before the reload can't leave its
@@ -375,7 +391,7 @@ export class BasesEngine {
     const cached = this.state.fileCache.get(cacheKey);
     if (cached) return cached;
     const fm = e.meta?.frontmatter ?? {};
-    const note = this.withLinks(normalizeFrontmatterProperties(fm, { propertyTypes: this.rowTypes(fm) }), e.path);
+    const note = this.withLinks(normalizeFrontmatterProperties(asData(fm) as Record<string, unknown>, { propertyTypes: this.rowTypes(fm) }), e.path);
     const links = (e.meta?.links ?? []).map((l) => ({
       path: l.target,
       resolvedPath: this.scope.index.resolveLink(l, e.path, this.scope.visible)?.path ?? null,
