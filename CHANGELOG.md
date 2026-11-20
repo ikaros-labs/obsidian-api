@@ -10,6 +10,10 @@
 - **Fix: a write whose audit line failed returned 500 although it had happened,** so a retried `POST /v1/notes` made a duplicate note. **The audit log format changes:** each write now logs two lines with the same `request` id. An `intent` line (account, token, op, path, revs) is written before the vault is touched, and a `result` line (`outcome: ok`, or `failed` with an `error` code) after. If the intent can't be written, the write is refused with 500 `audit_unavailable` and nothing changes, so a retry is safe. If only the result can't be written, the client gets the real outcome and the server logs an error. A move that leaves the file at both paths is now logged as a failed `move` with `error: move_incomplete`. Tools that read the audit log should join the two lines on `request`; an intent with no result means the outcome is unknown.
 - **Fix: a deleted folder could leave a ghost entry** in search, tags, bases and backlinks when a file inside it was being re-indexed at the same moment.
 
+## 1.2.4 — 2026-11-20
+
+- **Security fix: `fields` reads only the response's own data.** A crafted `fields` value (REST `fields=`, and the MCP tools and CLI flags that pass it on) could reach past the response into shared process state and weaken authentication. `fields` now follows only the response's own properties. Upgrade from 1.2.3.
+
 ## 1.2.3 — 2026-11-19
 
 - **Fix: bases `<`, `>`, `<=`, `>=` with an empty value, as in Obsidian.** An empty side (`Key:` or a missing property) counted as 0, so `Completed < date("2026-01-01")` matched notes with no `Completed` and `Score < 5` matched notes with no `Score`. Now a comparison with an empty side is empty, as in Obsidian: it doesn't match as a filter, `!(…)` of it does, and a formula `Score < 5` shows `null`. Other comparisons follow Obsidian too: a string right of a date or duration is read as one (`Completed < "2026-01-01"`), and a mixed comparison is plain JavaScript (`""` is a string, not empty, so `"" < date(…)` is true). Applies to `.base` views, `/v1/query`, `spall_query_base` and `spall base`.

@@ -1,6 +1,6 @@
 {
   "name": "@ikaros-labs/spall",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "type": "module",
   "description": "Scoped REST API, MCP server and CLI for your Obsidian vault: every bot or agent gets only the folders you grant.",
   "keywords": [
