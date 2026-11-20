@@ -144,6 +144,8 @@ export interface Config {
   mcp: McpConfig;
   accounts: Map<string, Account>;
   tokensByHash: Map<string, { account: Account; token: TokenInfo }>;
+  /** The settings that need a restart, as written, so a reload can keep them (see ConfigManager.reload). */
+  restartOnly: { server: RawConfig['server']; vault: Pick<RawConfig['vault'], 'path' | 'trash' | 'follow_symlinks'> };
 }
 
 export interface StatsConfig {
@@ -289,17 +291,22 @@ export function compileConfig(raw: RawConfig, configPath: string): Config {
     mcp: { enabled: raw.mcp.enabled, allowedOrigins: raw.mcp.allowed_origins, fenceUntrusted: raw.mcp.fence_untrusted },
     accounts,
     tokensByHash,
+    restartOnly: { server: raw.server, vault: { path: vaultPath, trash: raw.vault.trash, follow_symlinks: raw.vault.follow_symlinks } },
   };
 }
 
-export function loadConfig(configPath: string): Config {
+function readConfig(configPath: string): RawConfig {
   let text: string;
   try {
     text = readFileSync(configPath, 'utf8');
   } catch (e) {
     throw new ConfigError([`cannot read ${configPath}: ${(e as Error).message}`]);
   }
-  return compileConfig(parseConfigText(text), configPath);
+  return parseConfigText(text);
+}
+
+export function loadConfig(configPath: string): Config {
+  return compileConfig(readConfig(configPath), configPath);
 }
 
 /** Settings that only take effect after a restart. */
@@ -312,16 +319,18 @@ function restartKey(c: Config): string {
  * config is rejected and the previous one stays active.
  */
 export class ConfigManager {
-  private watcher: FSWatcher | null = null;
+  private watchers: FSWatcher[] = [];
   private timer: NodeJS.Timeout | null = null;
 
   constructor(
     private config: Config,
     private readonly log: { info(msg: string): void; error(msg: string): void } = console,
+    /** The path the operator gave. It is read again at every reload: it may be a symlink that gets re-pointed. */
+    private readonly sourcePath: string = config.configPath,
   ) {}
 
   static load(configPath: string, log?: ConstructorParameters<typeof ConfigManager>[1]): ConfigManager {
-    return new ConfigManager(loadConfig(configPath), log);
+    return new ConfigManager(loadConfig(configPath), log, path.resolve(configPath));
   }
 
   get current(): Config {
@@ -330,34 +339,52 @@ export class ConfigManager {
 
   reload(): boolean {
     let next: Config;
+    let restartNeeded = false;
     try {
-      next = loadConfig(this.config.configPath);
+      const raw = readConfig(this.sourcePath);
+      next = compileConfig(raw, this.sourcePath);
+      if (restartKey(next) !== restartKey(this.config)) {
+        // Server and vault settings can't change under a running server. Everything else must still
+        // apply: a token removed from the file has to stop working now, not at the next restart.
+        const { server, vault } = this.config.restartOnly;
+        next = compileConfig({ ...raw, server, vault: { ...raw.vault, ...vault } }, this.sourcePath);
+        restartNeeded = true;
+      }
     } catch (e) {
       this.log.error(`Config reload failed, keeping the previous config. ${(e as Error).message}`);
       return false;
     }
-    if (restartKey(next) !== restartKey(this.config)) {
-      this.log.error('Config reload rejected: server or vault settings changed, restart to apply them');
-      return false;
-    }
+    const moved = next.configPath !== this.config.configPath;
     this.config = next;
+    if (moved && this.watchers.length > 0) this.watch();
     this.log.info(`Config reloaded (${next.accounts.size} accounts)`);
+    if (restartNeeded) this.log.error('Server or vault settings changed in the config: restart to apply them (accounts, tokens and the rest are live)');
     return true;
   }
 
-  /** Watches the config's folder, so editors that replace the file are picked up too. */
+  /**
+   * Watches the folder of the config path as given and, when that is a symlink, the folder of the
+   * file it points to: editors that replace the file and deploys that re-point the link are both
+   * picked up.
+   */
   watch(): void {
-    const file = path.basename(this.config.configPath);
-    this.watcher = watch(path.dirname(this.config.configPath), (_event, name) => {
-      if (name !== file) return;
+    for (const w of this.watchers) w.close();
+    const schedule = () => {
       if (this.timer) clearTimeout(this.timer);
       this.timer = setTimeout(() => this.reload(), 200);
-    });
+    };
+    const files = new Set([this.sourcePath, this.config.configPath]);
+    this.watchers = [...new Set([...files].map((f) => path.dirname(f)))].map((dir) =>
+      watch(dir, (_event, name) => {
+        // A change to the file itself, or anything in the folder that made the path resolve elsewhere.
+        if ([...files].some((f) => path.dirname(f) === dir && path.basename(f) === name) || realpathLoose(this.sourcePath) !== this.config.configPath) schedule();
+      }),
+    );
   }
 
   close(): void {
-    this.watcher?.close();
+    for (const w of this.watchers) w.close();
+    this.watchers = [];
     if (this.timer) clearTimeout(this.timer);
   }
 }
-
