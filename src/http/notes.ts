@@ -7,7 +7,7 @@ import { PatchBodySchema, applyPatch } from '../patch.js';
 import { join, parsePlainPath, sanitizeTitle, withMdExtension } from '../paths.js';
 import { revOf } from '../vault-index.js';
 import { Ctx, etag, header, negotiate, parse, parseEtagList, project, type Services } from './context.js';
-import { checkIfMatch, checkNotANote, DeleteQuery, deleteFile, MoveBody, moveFile, noteJson, putFile, stripMove } from './fileops.js';
+import { checkIfMatch, checkNotANote, DeleteQuery, deleteFile, MoveBody, moveFile, noteJson, putFile, stripMove, writablePath } from './fileops.js';
 import { doc, jsonSchema } from './openapi.js';
 
 const PREFIX = '/v1/notes/';
@@ -90,9 +90,9 @@ export function noteRoutes(app: FastifyInstance, s: Services) {
   app.post('/v1/notes', { schema: doc({ summary: 'Create a note from a title (the file name is derived from it)', tag: 'Notes', body: CreateBody }) }, async (req, reply) => {
     const ctx = new Ctx(req, s);
     const b = parse(CreateBody, req.body);
-    const folder = await s.vault.resolve(ctx.toVault(parsePlainPath(b.folder)));
     const name = `${sanitizeTitle(b.title)}.md`;
-    const perms = ctx.perms([...folder, name]);
+    // The folder as requested and the folder it resolves to must both allow the new note.
+    const { real: folder, perms } = await writablePath(ctx, ctx.toVault(parsePlainPath(b.folder)), name);
     if (!perms.has('create')) throw perms.has('read') ? forbidden('create') : notFound();
     if ((await s.vault.kindOf(folder)) === 'file') throw new ApiError(400, 'invalid_path', 'folder is a file');
 

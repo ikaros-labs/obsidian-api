@@ -64,6 +64,9 @@ export class Vault {
         st = await lstat(abs);
       } catch (e) {
         if (errno(e) === 'ENOENT' || errno(e) === 'ENOTDIR') return [...realSegs, ...segs.slice(i)];
+        // A path that can't be looked up is not there, as far as callers can tell: a 500 here would
+        // say that the folders above it exist.
+        if (errno(e) === 'ENAMETOOLONG' || errno(e) === 'EACCES' || errno(e) === 'ELOOP') throw notFound();
         throw e;
       }
       if (st.isSymbolicLink()) {

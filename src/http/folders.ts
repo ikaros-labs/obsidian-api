@@ -6,6 +6,7 @@ import { splitFrontmatter } from '../markdown.js';
 import { join, parsePlainPath, split } from '../paths.js';
 import { entryName, type Entry, type Kind } from '../vault-index.js';
 import { Ctx, iso, parse, project, type Services } from './context.js';
+import { writablePath } from './fileops.js';
 import { doc } from './openapi.js';
 import { cursorKey, page as pageOf, sample } from './paging.js';
 import { checkKeys, checkOrdered, isEmpty, matches, parseWhere } from './where.js';
@@ -56,9 +57,10 @@ interface Item {
 
 /** The folder entry to list, if the account may list it at all. */
 export async function listableFolder(ctx: Ctx, segs: string[]): Promise<Entry> {
-  await ctx.s.vault.resolve(segs);
+  // Decide from the index and the grants first, and only then look at the disk.
   const e = ctx.s.index.get(join(segs));
   if (!e || e.kind !== 'folder' || !(ctx.visible(e) || ctx.traversable(e))) throw notFound();
+  await ctx.s.vault.resolve(segs);
   return e;
 }
 
@@ -252,8 +254,7 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
     const ctx = new Ctx(req, s);
     const segs = ctx.urlPath(PREFIX);
     if (segs.length === ctx.account.root.length) throw alreadyExists('');
-    const real = await s.vault.resolve(segs);
-    const perms = ctx.perms(real);
+    const { real, perms } = await writablePath(ctx, segs);
     if (!perms.has('create')) throw perms.has('read') ? forbidden('create') : notFound();
     if ((await s.vault.kindOf(real)) !== null) throw alreadyExists(ctx.toApi(real));
     await s.vault.mkdir(real);

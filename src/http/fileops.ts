@@ -84,11 +84,21 @@ export async function checkNotANote(ctx: Ctx, raw: string[], note: string[]): Pr
   });
 }
 
-/** Permissions on a path and, if it goes through a symlink, on its target too. */
-function effectivePerms(ctx: Ctx, segs: string[], real: string[]): Set<Perm> {
-  const a = ctx.perms(segs);
-  const b = ctx.perms(real);
-  return new Set([...a].filter((p) => b.has(p)));
+/**
+ * Where a write to `segs` would really land, and what the account may do there: the permissions it
+ * has on the path as requested and, if that goes through a symlink, on the target too. A path the
+ * account has no permissions on is not looked up on disk at all, so nothing about it (that it
+ * exists, that it is a symlink, where it points) can show in the answer.
+ */
+export async function writablePath(ctx: Ctx, segs: string[], child?: string): Promise<{ real: string[]; perms: Set<Perm> }> {
+  // With `child`, `segs` is the folder of a file to be created: the folder is resolved, the
+  // permissions are those on the file in it.
+  const leaf = child === undefined ? [] : [child];
+  const requested = ctx.perms([...segs, ...leaf]);
+  if (requested.size === 0) throw notFound();
+  const real = await ctx.s.vault.resolve(segs);
+  const onTarget = ctx.perms([...real, ...leaf]);
+  return { real, perms: new Set([...requested].filter((p) => onTarget.has(p))) };
 }
 
 export function checkIfMatch(ifMatch: string[] | null, current: string | null): void {
@@ -107,8 +117,7 @@ export async function putFile(ctx: Ctx, segs: string[], data: Buffer, reply: Fas
   const ifNoneMatch = parseEtagList(header(ctx.req, 'if-none-match'));
 
   return vault.locks.run([join(segs)], async () => {
-    const real = await vault.resolve(segs);
-    const perms = effectivePerms(ctx, segs, real);
+    const { real, perms } = await writablePath(ctx, segs);
     const existing = await vault.kindOf(real);
     if (existing === 'folder') {
       if (!perms.has('read')) throw notFound();
@@ -188,8 +197,9 @@ export async function moveFile(ctx: Ctx, segs: string[], body: unknown, kind: Ki
   return vault.locks.run([join(segs), join(dest)], async () => {
     const real = await ctx.resolve(segs, 'read', 'update', 'delete');
     if ((await vault.kindOf(real)) !== 'file') throw notFound();
-    let realDest = await vault.resolve(dest);
-    const destPerms = effectivePerms(ctx, dest, realDest);
+    const target = await writablePath(ctx, dest);
+    let realDest = target.real;
+    const destPerms = target.perms;
     if (!destPerms.has('create')) throw destPerms.has('read') ? forbidden('create') : notFound();
     if (join(realDest) === join(real)) throw invalidRequest('Source and destination are the same');
     if ((await vault.kindOf(realDest)) !== null) {

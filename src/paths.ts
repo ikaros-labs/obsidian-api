@@ -8,13 +8,19 @@ const invalid = (message: string) => new ApiError(400, 'invalid_path', message);
 export const join = (segs: Segs): string => segs.join('/');
 export const split = (path: string): string[] => (path === '' ? [] : path.split('/'));
 
+const MAX_SEGMENT_BYTES = 255;
+
 function checkSegment(seg: string): string {
   if (seg === '') throw invalid('Empty path segment');
   if (seg === '.' || seg === '..') throw invalid('Relative path segments are not allowed');
   if (/[/\\]/.test(seg)) throw invalid('Path segments may not contain slashes or backslashes');
   // eslint-disable-next-line no-control-regex
   if (/[\x00-\x1f\x7f]/.test(seg)) throw invalid('Path segments may not contain control characters');
-  return seg.normalize('NFC');
+  const nfc = seg.normalize('NFC');
+  // No filesystem takes a longer name. Refusing it here keeps the answer the same whether or not the
+  // folders above it exist (a lookup would fail with ENAMETOOLONG only below existing ones).
+  if (Buffer.byteLength(nfc) > MAX_SEGMENT_BYTES || Buffer.byteLength(seg) > MAX_SEGMENT_BYTES) throw invalid(`Path segments may not be longer than ${MAX_SEGMENT_BYTES} bytes`);
+  return nfc;
 }
 
 /**
