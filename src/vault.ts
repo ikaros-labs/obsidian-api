@@ -21,6 +21,17 @@ class WriteLock {
   }
 }
 
+/** A move that linked the destination but could remove neither the source nor the new link. */
+export class PartialMoveError extends Error {
+  constructor(
+    readonly from: Segs,
+    readonly to: Segs,
+    readonly reason: unknown,
+  ) {
+    super(`Moved ${join(from)} to ${join(to)} but could not remove either name`);
+  }
+}
+
 /**
  * Filesystem operations on vault-relative paths. Callers check permissions; this layer makes sure a
  * path really points inside the vault and keeps the index in sync.
@@ -150,8 +161,13 @@ export class Vault {
       try {
         await unlink(this.abs(from));
       } catch (e) {
-        // Don't leave the file under both names: drop the new one, so a retry starts clean.
-        await unlink(this.abs(to)).catch(() => {});
+        // Don't leave the file under both names: drop the new one, so a retry starts clean. Only if
+        // it is still our link: something else may have replaced it meanwhile.
+        if (!(await this.unlinkIfSameFile(to, from))) {
+          await this.index.refresh(join(from));
+          await this.refreshChain(to);
+          throw new PartialMoveError(from, to, e);
+        }
         throw e;
       }
     } else {
@@ -161,6 +177,18 @@ export class Vault {
     }
     await this.index.refresh(join(from));
     await this.refreshChain(to);
+  }
+
+  /** Unlinks `p` if it is the same file (inode) as `other`. False if that failed; true otherwise. */
+  private async unlinkIfSameFile(p: Segs, other: Segs): Promise<boolean> {
+    try {
+      const [a, b] = await Promise.all([lstat(this.abs(p)), lstat(this.abs(other))]);
+      if (a.ino !== b.ino || a.dev !== b.dev) return true;
+      await unlink(this.abs(p));
+      return true;
+    } catch (e) {
+      return errno(e) === 'ENOENT';
+    }
   }
 
   /** Moves a file or folder into the trash, keeping its relative path. */

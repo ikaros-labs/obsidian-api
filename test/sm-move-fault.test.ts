@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -53,4 +53,38 @@ describe('B7 move whose unlink of the source fails', () => {
       expect(readFileSync(to, 'utf8')).toBe(original);
     });
   }
+});
+
+describe('B11 move whose rollback fails too, or whose destination changed meanwhile', () => {
+  it('reports that the file is now at both paths, and indexes both', async () => {
+    env = await setup();
+    const from = path.join(env.vault, 'Research/Plan.md');
+    const to = path.join(env.vault, 'Research/Moved.md');
+    hooks.unlinkError = (p) => (p === from || p === to ? errnoError('EACCES') : null);
+    const r = await env.req('admin', { method: 'POST', url: '/v1/notes/Research/Plan/move', payload: { destination: 'Research/Moved' } });
+    expect(r.statusCode).toBe(500);
+    expect(r.json().error).toMatchObject({ message: expect.stringMatching(/both paths/), details: { path: 'Research/Plan.md', destination: 'Research/Moved.md' } });
+    expect(existsSync(from) && existsSync(to)).toBe(true);
+    expect(env.app.index.get('Research/Plan.md')).toBeDefined();
+    expect(env.app.index.get('Research/Moved.md')).toBeDefined();
+    const audit = readFileSync(env.auditPath, 'utf8');
+    expect(audit).toMatch(/"op":"move_incomplete"/);
+  });
+
+  it('does not remove a destination that something else replaced meanwhile', async () => {
+    env = await setup();
+    const from = path.join(env.vault, 'Research/Plan.md');
+    const to = path.join(env.vault, 'Research/Moved.md');
+    hooks.unlinkError = (p) => {
+      if (p !== from) return null;
+      // Another writer (sync, the app) replaces the new name before we roll back.
+      unlinkSync(to);
+      writeFileSync(to, 'someone else');
+      return errnoError('EACCES');
+    };
+    const r = await env.req('admin', { method: 'POST', url: '/v1/notes/Research/Plan/move', payload: { destination: 'Research/Moved' } });
+    expect(r.statusCode).toBe(500);
+    expect(readFileSync(to, 'utf8')).toBe('someone else');
+    expect(existsSync(from)).toBe(true);
+  });
 });

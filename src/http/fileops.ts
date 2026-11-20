@@ -5,6 +5,7 @@ import { ApiError, alreadyExists, forbidden, invalidRequest, notFound } from '..
 import { analyzeNote, splitFrontmatter } from '../markdown.js';
 import { join, parsePlainPath, withMdExtension } from '../paths.js';
 import { revOf } from '../vault-index.js';
+import { PartialMoveError } from '../vault.js';
 import { Ctx, etag, iso, parse, parseEtagList, header, project } from './context.js';
 
 /** Shared write logic for /notes and /files. `note` switches on markdown-aware responses. */
@@ -197,7 +198,16 @@ export async function moveFile(ctx: Ctx, segs: string[], body: unknown, kind: Ki
       realDest = await vault.freePath(realDest);
     }
     const rev = revOf(await vault.read(real));
-    await vault.move(real, realDest);
+    try {
+      await vault.move(real, realDest);
+    } catch (e) {
+      if (!(e instanceof PartialMoveError)) throw e;
+      await ctx.audit('move_incomplete', real, { destination: join(realDest), rev });
+      throw new ApiError(500, 'internal', 'The file was linked at the destination, but neither name could be removed: it is now at both paths', {
+        path: ctx.toApi(real),
+        destination: ctx.toApi(realDest),
+      });
+    }
     await ctx.audit('move', real, { destination: join(realDest), rev });
     if (!destPerms.has('read')) return { path: ctx.toApi(realDest), rev };
     return kind.note
