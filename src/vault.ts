@@ -109,10 +109,18 @@ export class Vault {
 
   /**
    * Overwrites an existing file in place. Rename-over-temp would be atomic, but it gives the file a
-   * new inode and so a new birth time, which is what `created` is based on.
+   * new inode and so a new birth time, which is what `created` is based on. A write that fails
+   * after truncating (disk full, I/O error) puts the old bytes back.
    */
   async overwrite(segs: Segs, data: string | Buffer): Promise<void> {
-    await writeFile(this.abs(segs), data);
+    const file = this.abs(segs);
+    const old = await readFile(file);
+    try {
+      await writeFile(file, data);
+    } catch (e) {
+      await writeFile(file, old).catch(() => {});
+      throw e;
+    }
     await this.index.refresh(join(segs));
   }
 

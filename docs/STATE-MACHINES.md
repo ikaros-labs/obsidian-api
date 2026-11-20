@@ -214,7 +214,7 @@ content: must never be observable after a request ends).
 | Present(r) | DELETE | Trashed | `read`+`delete`; `If-Match` | `fileops.ts:151-169`, `vault.ts:160-167` |
 | Present(r) | DELETE `permanent=true` | Absent | `read`+`purge` | `vault.ts:169-172` |
 | Present(r) at A | move to B | Absent at A, Present(r) at B | see M7 | `fileops.ts:176-207` |
-| Present(r) | overwrite fails midway | **Partial** | | `vault.ts:126-129` (**B3**) |
+| Present(r) | overwrite fails midway | Present(r): old bytes written back, error returned | | `Vault.overwrite` (fixed **B3**) |
 | any | external write / delete | any | | M9 picks it up |
 
 `overwrite` writes in place on purpose: a rename over a temp file would give the note a new inode and
@@ -225,9 +225,11 @@ retry after a lost response gets 409/412 and the current rev, not a second write
 retries get 404 once the first one went through. `POST /v1/notes` with the default
 `on_conflict: rename` is *not* idempotent: a retry creates `Title 1.md` (see B9 and decision D4).
 
-**Reachable invalid states.**
-- **B3** (breaks I6.2, I6.3): `writeFile` truncates first. If it fails after that (disk full, quota,
-  I/O error), the request returns 500 and the note now holds only the bytes written so far.
+**Invalid states.**
+- **B3** (broke I6.2, I6.3; fixed by I2): `writeFile` truncates first. If it failed after that
+  (disk full, quota, I/O error), the request returned 500 and the note held only the bytes written
+  so far. `overwrite` now reads the old bytes first and writes them back when the write fails; the
+  index is untouched, so the client's old rev still matches. A crash mid-write is still U1.
 - **B9**: the audit line is written after the change (`fileops.ts:129`, `notes.ts:113`, …). If that
   write fails, the client gets 500 for a change that happened; a retry of `POST /v1/notes` then
   makes a duplicate.
@@ -393,7 +395,7 @@ breaks I11.2 (no lock between Read and Renamed).
 | --- | --- | --- | --- | --- | --- |
 | B1 | M5, M8 | data loss, security | Recursive folder delete purges/trashes a file another account wrote after the permission check; the deleter could not see it | `test/sm-write-lock.test.ts` "B1 …" (parks `Vault.purge`, runs the other account's PUT) | fixed (I1) |
 | B2 | M5, M6 | data loss | Two PATCHes of one note through a symlink alias and its real path both apply to the old text; one edit is lost | `test/sm-write-lock.test.ts` "B2 …" (parks `Vault.overwrite`) | fixed (I1) |
-| B3 | M6 | data loss | A write that fails after truncating (ENOSPC, EIO) leaves a partial note and returns 500 | `test/sm-overwrite-fault.test.ts` (injects ENOSPC after 3 bytes) | open |
+| B3 | M6 | data loss | A write that fails after truncating (ENOSPC, EIO) leaves a partial note and returns 500 | `test/sm-overwrite-fault.test.ts` (injects ENOSPC after 3 bytes) | fixed (I2) |
 | B4 | M1, M2 | security | A config edit that also touches a restart-only setting is ignored entirely, so a token revoked in it stays valid until restart | `test/sm-config-reload.test.ts` | open |
 | B5 | M2, M11 | security | `token revoke` after a concurrent edit deletes the wrong token; the one asked for stays valid | `test/sm-cli-tokens.test.ts` "B5 …" (another revoke lands between load and edit) | open |
 | B6 | M2, M11 | wrong user-visible state | Concurrent `token create` + another edit: the printed token is not in the file | `test/sm-cli-tokens.test.ts` "B6 …" (child CLI process vs. a writer holding the file) | open |
@@ -421,13 +423,14 @@ Grouped fixes, in priority order. One commit each, each with the regression test
 - **Fix:** replace the per-path `Locks` with one FIFO `WriteLock` on the `Vault`, and take it in
   every write route, including `POST /v1/notes` and `POST /v1/folders`, which took none. `moveFile`
   now also works out its destination (folder or file) inside the lock.
-- **Commit:** COMMIT_I1
+- **Commit:** `b284e5f`
 - **Test:** `test/sm-write-lock.test.ts`
 
 ### I2. Roll back a failed in-place overwrite
 - **Bugs:** B3.
 - **Impact:** data loss.
-- **Fix:** —
+- **Fix:** `Vault.overwrite` keeps the old bytes and writes them back if the in-place write fails,
+  then rethrows. Keeps the inode (and so `created`), per D2.
 - **Commit:** —
 - **Test:** `test/sm-overwrite-fault.test.ts`
 
