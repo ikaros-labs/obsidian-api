@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Budget } from '../src/bases/engine.js';
 import { setup, type TestEnv } from './helpers.js';
 
@@ -42,44 +42,27 @@ describe('Bases expression budget', () => {
     expect(res.json().diagnostics).toEqual([]);
   });
 
-  // Review round: one budget for the whole query, not one per phase.
-  it('counts filters and columns against the same budget', async () => {
-    const slow = (k: number) => `!/(a+)+$/.matches("${'a'.repeat(k)}!")`;
-    // The fastest of three runs: other test files share the machine, and only the unloaded cost counts.
-    const fastest = async (account: string, payload: Record<string, unknown>) => {
-      let best = Infinity;
-      for (let i = 0; i < 3; i++) {
-        const { res, ms } = await query(account, payload);
-        if (res.statusCode === 200) best = Math.min(best, ms);
+  // Review round: one budget for the whole query, not one per phase. The clock is simulated so the
+  // result doesn't depend on the machine: every reading is `step` ms later than the one before, so
+  // each piece of a query's work (compile, enumerate, filter and sort, columns) appears to take `step`.
+  it('counts every phase of a query against the same budget', async () => {
+    const real = performance.now.bind(performance);
+    const payload = { filters: 'file.name != ""', formulas: { f: 'file.name.lower()' }, select: ['formula.f'], limit: 5 };
+    const withPhases = async (step: number) => {
+      let readings = 0;
+      const clock = vi.spyOn(performance, 'now').mockImplementation(() => real() + readings++ * step);
+      try {
+        return await env.req('admin', { method: 'POST', url: '/v1/query', payload });
+      } finally {
+        clock.mockRestore();
       }
-      return best;
     };
-    // An expression that takes 100 to 250 ms for one row on this machine.
-    let k = 16;
-    let one = 0;
-    for (; k < 30; k++) {
-      one = await fastest('one', { count_only: true, filters: slow(k) });
-      if (one >= 100) break;
-    }
-    const paths = (await env.req('admin', { method: 'POST', url: '/v1/query', payload: { select: ['file.name'], limit: 50 } })).json().results.map((r: { path: string }) => r.path) as string[];
-    let rows = Math.max(2, Math.round(800 / one));
-    const only = (n: number) => `[${paths.slice(0, n).map((p) => JSON.stringify(p)).join(',')}].contains(file.path)`;
-    // Filtering alone and the columns alone each fit the budget; together they are well over it.
-    let filtering = 0;
-    let columns = 0;
-    for (let attempt = 0; attempt < 10; attempt++) {
-      expect(rows).toBeLessThanOrEqual(paths.length);
-      filtering = await fastest('admin', { count_only: true, filters: `${only(rows)} && ${slow(k)}` });
-      columns = await fastest('admin', { filters: only(rows), formulas: { f: slow(k) }, select: ['formula.f'], limit: rows });
-      if (Math.max(filtering, columns) === Infinity) rows = Math.max(2, Math.floor(rows * 0.8));
-      else if (filtering + columns < 1500) rows = Math.max(rows + 1, Math.ceil((rows * 1600) / (filtering + columns)));
-      else break;
-    }
-    expect(filtering + columns).toBeGreaterThan(1500);
-    const { res } = await query('admin', { filters: `${only(rows)} && ${slow(k)}`, formulas: { f: slow(k) }, select: ['formula.f'], limit: rows });
+    // Four phases of 100 ms fit in the budget; four of 400 ms don't, though each one alone does.
+    expect((await withPhases(100)).statusCode).toBe(200);
+    const res = await withPhases(400);
     expect(res.statusCode).toBe(400);
     expect(res.json().error.message).toMatch(/too expensive/);
-  }, 60_000);
+  });
 
   it('Budget: time spent in one run is gone for the next', () => {
     const busy = (ms: number) => () => {
