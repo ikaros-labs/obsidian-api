@@ -163,11 +163,14 @@ export class VaultIndex {
   refresh(p: string): Promise<void> {
     // Serialise refreshes of the same path so a slow older read can't overwrite a newer one.
     const prev = this.pending.get(p) ?? Promise.resolve();
-    const next = prev.then(() => this.doRefresh(p));
+    const next = prev.catch(() => {}).then(() => this.doRefresh(p));
     this.pending.set(p, next);
-    void next.finally(() => {
+    // `next.finally(...)` would make a second promise that rejects with `next` and has no handler:
+    // an unhandled rejection, which stops the process. The caller's `next` carries the error.
+    const done = () => {
       if (this.pending.get(p) === next) this.pending.delete(p);
-    });
+    };
+    next.then(done, done);
     return next;
   }
 
@@ -185,7 +188,10 @@ export class VaultIndex {
     if (existed) for (const k of linkKey(existed)) this.byName.get(k)?.delete(p);
     this.put(entry);
     if (entry.kind === 'folder' && existed?.kind !== 'folder') {
-      await this.scanDir(p, new Set([await realpath(path.join(this.root, ...entry.segs))]));
+      // The folder can be gone again by now (a delete racing the create that got us here).
+      const real = await realpath(path.join(this.root, ...entry.segs)).catch(() => null);
+      if (real === null) this.removeTree(p);
+      else await this.scanDir(p, new Set([real]));
     }
   }
 
