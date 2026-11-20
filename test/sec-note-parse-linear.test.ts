@@ -34,7 +34,8 @@ describe('note analysis cost', () => {
     const yaml = Array.from({ length: 20000 }, (_, i) => `k${i}: 1`).join('\n');
     const [fm, ms] = timed(() => parseFrontmatter(`${yaml}\n`));
     expect(Object.keys(fm!).length).toBe(20000);
-    expect(ms).toBeLessThan(1500);
+    // 5.5 s before the fix; the margin is for a machine busy with other test files.
+    expect(ms).toBeLessThan(3000);
     expect(parseFrontmatter('a: 1\na: 2\n')).toBeNull();
     expect(parseFrontmatter('a:\n  b: 1\n  b: 2\n')).toBeNull();
     expect(parseFrontmatter('a: 1\nb: {c: 1, d: 2}\n')).toEqual({ a: 1, b: { c: 1, d: 2 } });

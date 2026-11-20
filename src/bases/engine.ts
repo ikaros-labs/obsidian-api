@@ -28,7 +28,7 @@ import {
   type RuntimeValue,
 } from 'obsidian-bases-expression';
 import type { ObsidianType } from '../config.js';
-import { invalidRequest } from '../errors.js';
+import { ApiError, invalidRequest } from '../errors.js';
 import { propertyWikilink } from '../markdown.js';
 import type { Entry, VaultIndex } from '../vault-index.js';
 
@@ -52,6 +52,11 @@ interface EvaluatorInternals {
   callString(value: string, name: string, args: Value[]): Value;
   callList(values: Value[], name: string, argExprs: unknown[], scope: Scope): Value;
   asNumber(value: Value): number;
+  noteProperty(name: string): Value;
+  context: { note?: Record<string, unknown> };
+  add(left: Value, right: Value): Value;
+  callGlobal(name: string, args: Value[]): Value;
+  callDate(value: Date, name: string, args: Value[]): Value;
   equals(left: Value, right: Value): boolean;
 }
 const ORDERING = new Set(['<', '>', '<=', '>=']);
@@ -103,23 +108,27 @@ proto.evalBinary = function (op, leftExpr, rightExpr, scope) {
  * Expressions come from requests and from .base files accounts write, and they run on the one event
  * loop every account shares. These limits keep one query from holding it or filling the heap:
  *
- * - `Budget` gives everything a query evaluates (compiling, filtering, sorting, the page's columns)
- *   one fixed amount of time. The watchdog of `vm` interrupts the running JavaScript, including a
- *   regex that backtracks, which nothing inside the thread can.
- * - A value an expression builds may not be larger than `MAX_VALUE_SIZE` (characters plus list items
- *   and object keys, nested ones included). The operations whose result can be far larger than
- *   their operands (`repeat`, `replace`, `join`) are checked before they run, so the large value is
- *   never allocated.
+ * - `Budget` gives a query one fixed amount of time for all of its synchronous work: parsing the
+ *   base and the property types, compiling, enumerating, filtering, sorting, paging and shaping
+ *   the response. The watchdog of `vm` interrupts the running JavaScript, including a regex that
+ *   backtracks, which nothing inside the thread can.
+ * - No value an expression reads or builds may render to more than `MAX_VALUE_SIZE` characters
+ *   (`sizeOf`: the length of what `stringifyValue` or the JSON response would hold, nested values,
+ *   link targets and display texts included). Every operand is therefore small, and converting one
+ *   to a string builds a small string.
+ * - The operations whose result can be far larger than their operands (`repeat`, `replace`, `join`,
+ *   `+`, `escapeHTML`, `format`) work out the size of what they would build first, refuse it if it
+ *   is too large, and charge it to the expression's allowance before anything is allocated.
  * - One expression, for one row, may build `MAX_EXPRESSION_ALLOCATION` in total, which stops a
  *   `map` from making many values that are each within the limit.
  * - `retainedMeter` bounds what a query keeps for all its rows (sort and group keys, a page's cells).
  */
 export const EVALUATION_BUDGET_MS = 1000;
 const MAX_VALUE_SIZE = 100_000;
-/** What `replace` may build at most before its result is checked against `MAX_VALUE_SIZE`. */
-const MAX_TRANSIENT_SIZE = 10_000_000;
 const MAX_EXPRESSION_ALLOCATION = 10_000_000;
 const MAX_RETAINED_SIZE = 20_000_000;
+/** A moment format pattern longer than this is no date format; tokens expand to several characters. */
+const MAX_FORMAT_PATTERN = 1000;
 
 const budgetContext = createContext({});
 const budgetScript = new Script('run()');
@@ -127,7 +136,10 @@ const budgetScript = new Script('run()');
 const tooExpensive = () =>
   invalidRequest(`The query is too expensive: its filters and formulas ran for more than ${EVALUATION_BUDGET_MS} ms. Simplify them or narrow the folders`);
 
-/** The evaluation time of one query. Every synchronous piece of its work runs through `run`. */
+/**
+ * The time one query may keep the event loop. Every synchronous piece of its work runs through `run`
+ * (awaited file reads in between don't hold the loop and don't count).
+ */
 export class Budget {
   private spent = 0;
 
@@ -155,23 +167,53 @@ export class Budget {
 const sizes = new WeakMap<object, number>();
 
 /**
- * Characters, list items and object keys in a value, nested ones included. Counting stops soon
- * after `MAX_VALUE_SIZE`, so the cost is bounded however large (or shared) the value is.
+ * How many characters a value renders to, as text (`stringifyValue`) or in the JSON response,
+ * whichever is longer, give or take punctuation. Counting stops soon after `MAX_VALUE_SIZE`, so the
+ * cost is bounded however large (or shared) the value is.
  */
 function sizeOf(v: Value): number {
-  if (v.type !== 'List' && v.type !== 'Object') return typeof v.value === 'string' ? v.value.length : 1;
+  switch (v.type) {
+    case 'String':
+    case 'HTML':
+    case 'Icon':
+      return v.value.length;
+    case 'Null':
+    case 'Boolean':
+      return 5;
+    case 'Number':
+      return String(v.value).length;
+    case 'Date':
+      return 24;
+    case 'Duration':
+      return 32;
+    case 'File':
+      return v.value.path.length;
+    case 'Link':
+      return v.value.path.length + 5 + (v.value.display ? sizeOf(v.value.display) : 0);
+    case 'RegExp':
+      return v.value.source.length + v.value.flags.length + 2;
+    case 'Image':
+      return 5 + (typeof v.value === 'string' ? v.value.length : v.value.path.length);
+    case 'Error':
+      return v.value.message.length + 12;
+    case 'List':
+    case 'Object':
+      break;
+    default:
+      return 1;
+  }
   const known = sizes.get(v.value);
   if (known !== undefined) return known;
-  let n = 1;
+  let n = 2;
   if (v.type === 'List') {
     for (const item of v.value) {
-      n += sizeOf(item);
+      n += sizeOf(item) + 1;
       if (n > MAX_VALUE_SIZE) break;
     }
   } else {
     for (const key in v.value) {
       if (!Object.hasOwn(v.value, key)) continue;
-      n += key.length + sizeOf(v.value[key]!);
+      n += key.length + 4 + sizeOf(v.value[key]!);
       if (n > MAX_VALUE_SIZE) break;
     }
   }
@@ -196,6 +238,14 @@ const BUILDS = new Set(['Call', 'Binary', 'Array', 'Object']);
 let evalDepth = 0;
 let allocated = 0;
 const overAllocated = () => errorValue('This expression builds too much data');
+/** Charges `size` to the running expression before it is built. False when that is over its allowance. */
+const reserve = (size: number): boolean => (allocated += size) <= MAX_EXPRESSION_ALLOCATION;
+
+function notePropertyRead(expr: unknown): string | null {
+  const e = expr as { type?: string; computed?: boolean; object?: { type?: string; name?: string }; property?: { type?: string; value?: unknown } } | undefined;
+  if (e?.type !== 'Member' || !e.computed || e.object?.type !== 'Identifier' || e.object.name !== 'note') return null;
+  return e.property?.type === 'Literal' && typeof e.property.value === 'string' ? e.property.value : null;
+}
 
 const libraryEval = proto.eval;
 proto.eval = function (expr, scope) {
@@ -204,44 +254,118 @@ proto.eval = function (expr, scope) {
   evalDepth++;
   let out: Value;
   try {
-    out = libraryEval.call(this, expr, scope);
+    // `note["x"]` (how a column reads a property) is that one property: the library would build
+    // the whole frontmatter as an object first, and a note with a lot of it would be over the limit.
+    const property = notePropertyRead(expr);
+    out = property === null ? libraryEval.call(this, expr, scope) : Object.hasOwn(this.context.note ?? {}, property) ? this.noteProperty(property) : nullValue();
   } finally {
     evalDepth--;
   }
-  const node = expr as { type?: string; callee?: { property?: unknown } } | undefined;
-  if (!node || !BUILDS.has(node.type!)) return out;
+  // Read or built: nothing larger than the limit goes on to be an operand.
   const size = sizeOf(out);
-  if (size > MAX_VALUE_SIZE) return tooLarge(node.type === 'Call' && typeof node.callee?.property === 'string' ? `${node.callee.property}()` : 'this expression');
-  allocated += size + 1;
-  return allocated > MAX_EXPRESSION_ALLOCATION ? overAllocated() : out;
+  const node = expr as { type?: string; callee?: { property?: unknown } } | undefined;
+  if (size > MAX_VALUE_SIZE) return tooLarge(node?.type === 'Call' && typeof node.callee?.property === 'string' ? `${node.callee.property}()` : 'this expression');
+  if (!node || !BUILDS.has(node.type!)) return out;
+  return reserve(size + 1) ? out : overAllocated();
 };
+
+const libraryAdd = proto.add;
+proto.add = function (left, right) {
+  if (left.type === 'String' || right.type === 'String') {
+    const built = sizeOf(left) + sizeOf(right);
+    if (built > MAX_VALUE_SIZE) return tooLarge('+');
+    if (!reserve(built)) return overAllocated();
+  }
+  return libraryAdd.call(this, left, right);
+};
+
+/** How long `value.replace(pattern, replacement)` would be at most, found without building it. */
+function replacedSize(value: string, pattern: Value, replacement: string): number {
+  let matches = 0;
+  let matched = 0;
+  if (pattern.type !== 'RegExp') {
+    // The library replaces a text pattern with split and join: every occurrence, `$` not special.
+    const needle = stringifyValue(pattern);
+    if (needle === '') matches = Math.max(0, value.length - 1);
+    else for (let i = value.indexOf(needle); i !== -1; i = value.indexOf(needle, i + needle.length)) matches++, (matched += needle.length);
+    return value.length - matched + matches * replacement.length;
+  }
+  const re = new RegExp(pattern.value.source, `${pattern.value.flags.replace(/[gy]/g, '')}g`);
+  for (let m = re.exec(value); m; m = re.exec(value)) {
+    matches++;
+    matched += m[0].length;
+    if (m[0] === '') re.lastIndex++;
+    if (!pattern.value.global) break;
+  }
+  // `$&` and `$1` stand for matched text; "$`" and "$'" for up to the whole string, at every match.
+  const refs = replacement.split('$').length - 1;
+  const referenced = /\$[`']/.test(replacement) ? matches * value.length : matched;
+  return value.length - matched + matches * replacement.length + refs * referenced;
+}
 
 const libraryCallString = proto.callString;
 proto.callString = function (value, name, args) {
-  if (name === 'repeat' && value.length * this.asNumber(args[0] ?? fromJs(0)) > MAX_VALUE_SIZE) return tooLarge('repeat()');
-  if (name === 'replace') {
-    // Each match adds at most the replacement; `$&` and `$1` add at most the text they stand for,
-    // once over all matches; "$`" and "$'" can add the whole string at every match.
-    const replacement = stringifyValue(args[1] ?? fromJs(''));
-    const refs = replacement.split('$').length - 1;
-    const perMatch = replacement.length + (/\$[`']/.test(replacement) ? refs * value.length : 0);
-    if (value.length + (value.length + 1) * perMatch + refs * value.length > MAX_TRANSIENT_SIZE) return tooLarge('replace()');
-  }
+  let built = 0;
+  if (name === 'repeat') built = value.length * this.asNumber(args[0] ?? fromJs(0)) || 0;
+  else if (name === 'replace') built = replacedSize(value, args[0] ?? nullValue(), stringifyValue(args[1] ?? fromJs('')));
+  if (built > MAX_VALUE_SIZE) return tooLarge(`${name}()`);
+  if (!reserve(built)) return overAllocated();
   return libraryCallString.call(this, value, name, args);
 };
 
 const libraryCallList = proto.callList;
 proto.callList = function (values, name, argExprs, scope) {
-  if (name === 'join' && argExprs[0] !== undefined) {
-    let total = values.length * stringifyValue(this.eval(argExprs[0], scope)).length;
-    for (const item of values) {
-      if (total > MAX_VALUE_SIZE) break;
-      total += sizeOf(item);
-    }
-    if (total > MAX_VALUE_SIZE) return tooLarge('join()');
+  if (name !== 'join') return libraryCallList.call(this, values, name, argExprs, scope);
+  // Done here in full, so the separator is evaluated once, whether or not one was given.
+  const separator = stringifyValue(this.eval(argExprs[0], scope));
+  let built = separator.length * Math.max(0, values.length - 1);
+  for (const item of values) {
+    if (built > MAX_VALUE_SIZE) break;
+    built += sizeOf(item);
   }
-  return libraryCallList.call(this, values, name, argExprs, scope);
+  if (built > MAX_VALUE_SIZE) return tooLarge('join()');
+  if (!reserve(built)) return overAllocated();
+  return fromJs(values.map(stringifyValue).join(separator));
 };
+
+const libraryCallGlobal = proto.callGlobal;
+proto.callGlobal = function (name, args) {
+  // `&` becomes `&amp;`, `"` becomes `&quot;`: up to six characters for one.
+  if (name === 'escapeHTML' && args[0]) {
+    const built = sizeOf(args[0]) * 6;
+    if (built > MAX_VALUE_SIZE) return tooLarge('escapeHTML()');
+    if (!reserve(built)) return overAllocated();
+  }
+  return libraryCallGlobal.call(this, name, args);
+};
+
+const libraryCallDate = proto.callDate;
+proto.callDate = function (value, name, args) {
+  if (name === 'format' && args[0] && sizeOf(args[0]) > MAX_FORMAT_PATTERN) return tooLarge('format()');
+  return libraryCallDate.call(this, value, name, args);
+};
+
+/** One filter of a view, compiled, with what is wrong with it. */
+export interface CompiledViewFilter {
+  compiled: CompiledFilter;
+  /** A quoted string: it would match every row. */
+  literal: boolean;
+  properties: string[];
+  problems: string[];
+}
+
+/** Parse errors become `problems`, and so does a filter that is a quoted string (a JSON-encoded filter, quoted once too often). */
+export function compileViewFilter(filter: FilterExpression): CompiledViewFilter {
+  const compiled = compileFilter(filter);
+  const problems = compiled.diagnostics.filter((d) => d.severity === 'error').map((d) => d.message);
+  const leaves = filterLeaves(filter);
+  const literal = leaves.some((l) => {
+    const ast = compileExpression(l).ast as { type?: string; value?: unknown } | null;
+    return ast?.type === 'Literal' && typeof ast.value === 'string';
+  });
+  if (literal) problems.push('This filter is a quoted string, so it would match every row. Remove the outer quotes');
+  return { compiled, literal, properties: [...new Set(leaves.flatMap(noteProperties))], problems };
+}
 
 export interface SortSpec {
   property: string;
@@ -250,8 +374,11 @@ export interface SortSpec {
 
 /** Everything needed to run a view: the merged filters plus how to order, group and show rows. */
 export interface ViewSpec {
-  /** Labelled filters, all ANDed. A label is where the filter came from, for diagnostics. */
-  filters: { where: string; filter: FilterExpression }[];
+  /**
+   * Labelled filters, all ANDed. A label is where the filter came from, for diagnostics. `compiled`
+   * is set when the filter was compiled already (a request filter is checked before anything else).
+   */
+  filters: { where: string; filter: FilterExpression; compiled?: CompiledViewFilter }[];
   formulas: Record<string, string>;
   sort: SortSpec[];
   groupBy?: SortSpec;
@@ -304,22 +431,29 @@ export class PropertyTypes {
     private readonly overrides: () => Record<string, ObsidianType>,
   ) {}
 
-  async load(): Promise<Record<string, PropertyValueType>> {
+  /** `run` wraps the parsing, so a query can charge it to its budget. */
+  async load(run: <T>(fn: () => T) => T = (fn) => fn()): Promise<Record<string, PropertyValueType>> {
     const file = path.join(this.vaultPath, '.obsidian', 'types.json');
     let fromFile: Record<string, PropertyValueType> = {};
     try {
       const st = await stat(file);
       if (this.cache?.mtimeMs !== st.mtimeMs) {
-        const json = JSON.parse(await readFile(file, 'utf8')) as { types?: Record<string, string> };
-        const types: Record<string, PropertyValueType> = {};
-        for (const [k, v] of Object.entries(json.types ?? {})) {
-          const mapped = TYPE_MAP[v as ObsidianType];
-          if (mapped) types[k] = mapped;
-        }
+        const text = await readFile(file, 'utf8');
+        const types = run(() => {
+          const json = JSON.parse(text) as { types?: Record<string, string> };
+          const out: Record<string, PropertyValueType> = {};
+          for (const [k, v] of Object.entries(json.types ?? {})) {
+            const mapped = TYPE_MAP[v as ObsidianType];
+            if (mapped) out[k] = mapped;
+          }
+          return out;
+        });
         this.cache = { mtimeMs: st.mtimeMs, types };
       }
       fromFile = this.cache.types;
-    } catch {
+    } catch (e) {
+      // A file that is missing or not JSON means no types; a query that ran out of time still fails.
+      if (e instanceof ApiError) throw e;
       this.cache = null;
     }
     const merged = { ...fromFile };
@@ -642,16 +776,10 @@ export class BasesEngine {
    */
   static compile(spec: ViewSpec) {
     const diagnostics: Diagnostic[] = [];
-    const filters: { where: string; compiled: CompiledFilter; literal: boolean; properties: string[] }[] = spec.filters.map(({ where, filter }) => {
-      const compiled = compileFilter(filter);
-      for (const d of compiled.diagnostics) if (d.severity === 'error') diagnostics.push({ where, message: d.message });
-      const leaves = filterLeaves(filter);
-      const literal = leaves.some((l) => {
-        const ast = compileExpression(l).ast as { type?: string; value?: unknown } | null;
-        return ast?.type === 'Literal' && typeof ast.value === 'string';
-      });
-      if (literal) diagnostics.push({ where, message: 'This filter is a quoted string, so it would match every row. Remove the outer quotes' });
-      return { where, compiled, literal, properties: [...new Set(leaves.flatMap(noteProperties))] };
+    const filters = spec.filters.map(({ where, filter, compiled }) => {
+      const f = compiled ?? compileViewFilter(filter);
+      for (const message of f.problems) diagnostics.push({ where, message });
+      return { where, ...f };
     });
     const expr = (id: string) => compileExpression(propertyExpression(id, spec.formulas));
     for (const [name, source] of Object.entries(spec.formulas)) {

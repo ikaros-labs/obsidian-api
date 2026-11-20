@@ -17,12 +17,15 @@ describe('Bases expression budget', () => {
 
   it('stops an expression that runs too long', async () => {
     const lists = (depth: number): string => (depth === 0 ? 'value' : `[1,2,3,4,5,6,7,8,9,10].map(${lists(depth - 1)})`);
-    for (const filters of [`/(a+)+$/.matches("${'a'.repeat(28)}!")`, `${lists(7)}.length > 0`]) {
-      const { res, ms } = await query('one', { count_only: true, filters });
-      expect(res.statusCode, filters.slice(0, 40)).toBe(400);
-      expect(res.json().error.message).toMatch(/too expensive/);
-      expect(ms).toBeLessThan(3000);
-    }
+    const regex = await query('one', { count_only: true, filters: `/(a+)+$/.matches("${'a'.repeat(28)}!")` });
+    expect(regex.res.statusCode).toBe(400);
+    expect(regex.res.json().error.message).toMatch(/too expensive/);
+    expect(regex.ms).toBeLessThan(3000);
+    // Ten million list items: stopped by the time budget or, sooner, by the allocation allowance.
+    const nested = await query('one', { count_only: true, filters: `${lists(7)}.length > 0` });
+    if (nested.res.statusCode === 400) expect(nested.res.json().error.message).toMatch(/too expensive/);
+    else expect(JSON.stringify(nested.res.json().diagnostics)).toMatch(/too much data|too large/);
+    expect(nested.ms).toBeLessThan(3000);
     const formula = await query('one', { formulas: { f: `/(a+)+$/.matches("${'a'.repeat(28)}!")` }, select: ['formula.f'] });
     expect(formula.res.statusCode).toBe(400);
     expect(formula.ms).toBeLessThan(3000);

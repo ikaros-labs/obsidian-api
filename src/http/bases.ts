@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { FilterExpression } from 'obsidian-bases-expression';
 import { z } from 'zod';
 import { baseDiagnostics, displayName, parseBase, SortSchema, type BaseFile } from '../bases/base-file.js';
-import { BasesEngine, Budget, plainValue, retainedMeter, type ViewSpec } from '../bases/engine.js';
+import { BasesEngine, Budget, compileViewFilter, plainValue, retainedMeter, type ViewSpec } from '../bases/engine.js';
 import { ApiError, invalidRequest, notFound } from '../errors.js';
 import { splitFrontmatter } from '../markdown.js';
 import { isPrefix, join, parsePlainPath } from '../paths.js';
@@ -55,19 +55,25 @@ function universe(ctx: Ctx, folders: string[][] = [ctx.account.root]): Entry[] {
   return [...out.values()];
 }
 
-async function readBase(ctx: Ctx, segs: string[]): Promise<{ real: string[]; base: BaseFile; rev: string }> {
+async function readBase(ctx: Ctx, segs: string[], budget: Budget): Promise<{ real: string[]; base: BaseFile; rev: string }> {
   if (segs.length === ctx.account.root.length) throw new ApiError(400, 'invalid_path', 'A base path is required');
   const real = await ctx.resolve(segs, 'read');
   if ((await ctx.s.vault.kindOf(real)) !== 'file') throw notFound();
   const buf = await ctx.s.vault.read(real);
-  return { real, base: parseBase(buf.toString('utf8')), rev: revOf(buf) };
+  return { real, base: budget.run(() => parseBase(buf.toString('utf8'))), rev: revOf(buf) };
 }
 
-/** Rejects request filters that don't parse, instead of silently matching nothing. */
-function checkRequestFilter(filter: unknown, budget: Budget) {
-  if (filter === undefined) return;
-  const diagnostics = budget.run(() => BasesEngine.compile({ filters: [{ where: 'filters', filter: filter as FilterExpression }], formulas: {}, sort: [], columns: [] }).diagnostics);
-  if (diagnostics.length > 0) throw invalidRequest('Invalid filter expression', { diagnostics });
+/**
+ * Compiles a request filter, once: the result goes into the view's spec. One that doesn't parse is
+ * rejected here, instead of silently matching nothing.
+ */
+function requestFilter(filter: unknown, budget: Budget): ViewSpec['filters'] {
+  if (filter === undefined) return [];
+  const compiled = budget.run(() => compileViewFilter(filter as FilterExpression));
+  if (compiled.problems.length > 0) {
+    throw invalidRequest('Invalid filter expression', { diagnostics: compiled.problems.map((message) => ({ where: 'filters', message })) });
+  }
+  return [{ where: 'request.filters', filter: filter as FilterExpression, compiled }];
 }
 
 /** Runs a view and shapes the response. Shared by base queries and ad-hoc queries. */
@@ -79,7 +85,7 @@ async function respond(
   body: CommonBody,
   meta: { cursorParts: unknown[]; names: (id: string) => string; thisFile?: Entry; head: Record<string, unknown> },
 ) {
-  const propertyTypes = await ctx.s.propertyTypes.load();
+  const propertyTypes = await ctx.s.propertyTypes.load((fn) => budget.run(fn));
   // Same index, types and Account (so: same access) → the per-file inputs built by earlier queries are still valid.
   const stateKey = JSON.stringify([ctx.s.index.version, propertyTypes]);
   const engine = new BasesEngine(
@@ -97,15 +103,11 @@ async function respond(
     throw invalidRequest('include body needs sample, or a limit of 20 or less');
   }
 
-  let selected = result.rows;
-  let paging = { next_cursor: null as string | null, has_more: false };
-  if (body.sample !== undefined) {
-    selected = sample(result.rows, body.sample, body.seed);
-  } else {
+  const { selected, paging } = budget.run(() => {
+    if (body.sample !== undefined) return { selected: sample(result.rows, body.sample, body.seed), paging: { next_cursor: null as string | null, has_more: false } };
     const p = page(result.rows, body.limit, body.cursor, cursorKey(meta.cursorParts));
-    selected = p.slice;
-    paging = { next_cursor: p.next_cursor, has_more: p.has_more };
-  }
+    return { selected: p.slice, paging: { next_cursor: p.next_cursor, has_more: p.has_more } };
+  });
 
   const columnFailures = new Map<string, { message: string; rows: number }>();
   // Column values are expressions too: evaluated under what is left of the query's budget.
@@ -126,15 +128,18 @@ async function respond(
       return values;
     }),
   );
-  const results = await Promise.all(
-    selected.map(async (row, i) => {
+  // Reading the bodies waits on the disk and leaves the loop free; splitting them is the query's work.
+  const texts = body.include.includes('body')
+    ? await Promise.all(selected.map(async (row) => (row.entry.kind === 'note' ? (await ctx.s.vault.read(row.entry.real ?? row.entry.segs)).toString('utf8') : null)))
+    : null;
+  const results = budget.run(() =>
+    selected.map((row, i) => {
       const out: Record<string, unknown> = { path: ctx.toApi(row.entry.path) };
       if (result.groups) out.group = row.group ? plainValue(row.group, toApiPath) : null;
       out.values = pageValues[i];
       if (body.include.includes('frontmatter')) out.frontmatter = row.entry.meta?.frontmatter ?? null;
-      if (body.include.includes('body') && row.entry.kind === 'note') {
-        out.body = splitFrontmatter((await ctx.s.vault.read(row.entry.real ?? row.entry.segs)).toString('utf8')).body;
-      }
+      const text = texts?.[i];
+      if (typeof text === 'string') out.body = splitFrontmatter(text).body;
       return out;
     }),
   );
@@ -153,7 +158,8 @@ async function respond(
 export function baseRoutes(app: FastifyInstance, s: Services) {
   app.get('/v1/bases/*', { schema: doc({ summary: 'Read a .base definition', tag: 'Bases', url: '/v1/bases/{path}' }) }, async (req, reply) => {
     const ctx = new Ctx(req, s);
-    const { real, base, rev } = await readBase(ctx, withBaseExtension(ctx.urlPath(PREFIX)));
+    const budget = new Budget();
+    const { real, base, rev } = await readBase(ctx, withBaseExtension(ctx.urlPath(PREFIX)), budget);
     reply.header('etag', etag(rev));
     return {
       path: ctx.toApi(real),
@@ -171,7 +177,7 @@ export function baseRoutes(app: FastifyInstance, s: Services) {
         group_by: v.groupBy ?? null,
         limit: v.limit ?? null,
       })),
-      diagnostics: new Budget().run(() => baseDiagnostics(base)),
+      diagnostics: budget.run(() => baseDiagnostics(base)),
     };
   });
 
@@ -181,8 +187,8 @@ export function baseRoutes(app: FastifyInstance, s: Services) {
     if (raw.length <= ctx.account.root.length + 1 || raw.at(-1) !== 'query') throw new ApiError(404, 'not_found', 'No such endpoint');
     const body = parse(BaseQueryBody, req.body ?? {});
     const budget = new Budget();
-    checkRequestFilter(body.filters, budget);
-    const { real, base, rev } = await readBase(ctx, withBaseExtension(raw.slice(0, -1)));
+    const fromRequest = requestFilter(body.filters, budget);
+    const { real, base, rev } = await readBase(ctx, withBaseExtension(raw.slice(0, -1)), budget);
 
     const view = body.view === undefined ? base.views[0] : base.views.find((v) => v.name === body.view);
     if (body.view !== undefined && !view) {
@@ -202,8 +208,9 @@ export function baseRoutes(app: FastifyInstance, s: Services) {
       filters: [
         { where: 'filters', filter: base.filters },
         ...(view ? [{ where: `views.${view.name}.filters`, filter: view.filters }] : []),
-        ...(body.filters !== undefined ? [{ where: 'request.filters', filter: body.filters as FilterExpression }] : []),
-      ].filter((f) => f.filter !== undefined && f.filter !== null),
+      ]
+        .filter((f) => f.filter !== undefined && f.filter !== null)
+        .concat(fromRequest),
       formulas: base.formulas,
       sort: body.sort ?? view?.sort ?? [],
       groupBy: view?.groupBy,
@@ -223,7 +230,7 @@ export function baseRoutes(app: FastifyInstance, s: Services) {
     const ctx = new Ctx(req, s);
     const body = parse(AdhocQueryBody, req.body ?? {});
     const budget = new Budget();
-    checkRequestFilter(body.filters, budget);
+    const fromRequest = requestFilter(body.filters, budget);
     const folders = body.from.map((f) => {
       const segs = ctx.toVault(parsePlainPath(f));
       const e = s.index.get(join(segs));
@@ -233,7 +240,7 @@ export function baseRoutes(app: FastifyInstance, s: Services) {
     // Overlapping folders (e.g. "" and "Notes") would list rows twice; keep the outermost.
     const outer = folders.filter((f, i) => !folders.some((g, j) => j !== i && g.length < f.length && isPrefix(g, f)));
     const spec: ViewSpec = {
-      filters: body.filters !== undefined ? [{ where: 'request.filters', filter: body.filters as FilterExpression }] : [],
+      filters: fromRequest,
       formulas: body.formulas,
       sort: body.sort ?? [],
       groupBy: body.group_by,

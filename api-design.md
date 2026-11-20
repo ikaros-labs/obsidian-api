@@ -512,7 +512,7 @@ Response for the "To read" view:
   - A filter that reads a note property none of the queried notes has gets a diagnostic, naming the property with the same name in another case if there is one: `Unknown property "status": no queried note has it. Did you mean "Status"?`
   - Runtime failures are counted per expression: `{ where, message, rows }`.
   - A `.base` file that isn't valid YAML returns 422 `invalid_base`.
-  - Expressions have limits, because every account shares one process: a query gets 1 s of evaluation in total (compiling, filtering, sorting and the page's columns together; over it: 400 `invalid_request`), and a value an expression builds may hold at most 100,000 characters and items (over it: a value error in `diagnostics`).
+  - Expressions have limits, because every account shares one process. A query gets 1 s for all of its work on the server's event loop: parsing the base, compiling, listing the rows, filtering, sorting, paging and building the response (over it: 400 `invalid_request`). Waiting for file reads doesn't count, and neither does parsing the request body or serialising the response, which are bounded by `server.max_body` and by the result limits. A value an expression reads or builds may render to at most 100,000 characters (list items, link targets and display texts included); over it, the expression is a value error in `diagnostics`. That includes a note property that large: other properties of the note still work.
 - **No view at all:** a base without `views` runs its global filters, with `file.name` plus the keys of `properties` as columns.
 
 ### `POST /v1/query`
