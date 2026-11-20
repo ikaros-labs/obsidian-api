@@ -6,6 +6,7 @@ import { AccountAccessSchema, compileAccess, parseExclude, tryPath as tryPathInt
 import { ConfigError } from './errors.js';
 import { TOOL_NAMES } from './mcp/names.js';
 import { hasDotSegment, join } from './paths.js';
+import { expiryTime } from './tokens.js';
 
 const RATE_RE = /^(\d+)\/(sec|min|hour)$/;
 const SIZE_RE = /^(\d+)(b|kb|mb)?$/i;
@@ -16,7 +17,11 @@ export const OBSIDIAN_TYPES = ['text', 'multitext', 'number', 'checkbox', 'date'
 export type ObsidianType = (typeof OBSIDIAN_TYPES)[number];
 
 const RateSchema = z.string().regex(RATE_RE, 'expected e.g. "120/min" (unit: sec, min or hour)');
-const DateSchema = z.string().regex(DATE_RE, 'expected a date like 2027-10-01');
+// The pattern alone lets 2027-13-45 through, which no date parser reads.
+const DateSchema = z
+  .string()
+  .regex(DATE_RE, 'expected a date like 2027-10-01')
+  .refine((s) => expiryTime(s) !== null, 'not a valid date');
 
 const TokenSchema = z.strictObject({
   name: z.string().regex(/^[\w.-]+$/, 'letters, digits, ".", "_" and "-" only'),
