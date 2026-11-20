@@ -7,7 +7,7 @@ import { PatchBodySchema, applyPatch } from '../patch.js';
 import { join, parsePlainPath, sanitizeTitle, withMdExtension } from '../paths.js';
 import { revOf } from '../vault-index.js';
 import { Ctx, etag, header, negotiate, parse, parseEtagList, project, type Services } from './context.js';
-import { checkIfMatch, checkNotANote, DeleteQuery, deleteFile, MoveBody, moveFile, noteJson, putFile, stripMove, writablePath } from './fileops.js';
+import { checkIfMatch, checkNotANote, DeleteQuery, deleteFile, freeName, MoveBody, moveFile, noteJson, putFile, stripMove, writablePath } from './fileops.js';
 import { doc, jsonSchema } from './openapi.js';
 
 const PREFIX = '/v1/notes/';
@@ -108,7 +108,7 @@ export function noteRoutes(app: FastifyInstance, s: Services) {
           if (!(e instanceof ApiError && e.code === 'already_exists') || b.on_conflict === 'fail' || attempt > 50) {
             throw e instanceof ApiError && e.code === 'already_exists' ? alreadyExists(ctx.toApi(target)) : e;
           }
-          target = await s.vault.freePath(target);
+          target = await freeName(ctx, target, requested);
         }
       }
       const rev = revOf(data);

@@ -101,6 +101,18 @@ export async function writablePath(ctx: Ctx, segs: string[], child?: string): Pr
   return { real, perms: new Set([...requested].filter((p) => onTarget.has(p))) };
 }
 
+/**
+ * The name `on_conflict: rename` gives a file that would land on `taken`: the first numbered one that
+ * is free and that the account may create, both in `requestedDir` and where that really is.
+ */
+export async function freeName(ctx: Ctx, taken: string[], requestedDir: string[]): Promise<string[]> {
+  try {
+    return await ctx.s.vault.freePath(taken, (c) => ctx.can(c, 'create') && ctx.can([...requestedDir, c.at(-1)!], 'create'));
+  } catch (e) {
+    throw e instanceof ApiError && e.code === 'already_exists' ? alreadyExists(ctx.toApi(taken)) : e;
+  }
+}
+
 export function checkIfMatch(ifMatch: string[] | null, current: string | null): void {
   if (!ifMatch) return;
   if (ifMatch.includes('*') ? current !== null : current !== null && ifMatch.includes(current)) return;
@@ -204,7 +216,8 @@ export async function moveFile(ctx: Ctx, segs: string[], body: unknown, kind: Ki
     if (join(realDest) === join(real)) throw invalidRequest('Source and destination are the same');
     if ((await vault.kindOf(realDest)) !== null) {
       if (b.on_conflict === 'fail') throw alreadyExists(ctx.toApi(realDest));
-      realDest = await vault.freePath(realDest);
+      // Only names the account may create, on the path as requested and where it really lands.
+      realDest = await freeName(ctx, realDest, dest.slice(0, -1));
     }
     const rev = revOf(await vault.read(real));
     await vault.move(real, realDest);
