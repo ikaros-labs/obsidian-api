@@ -655,6 +655,7 @@ I7-I11 are the review round: they complete I2, I3, I4, I5 and I6. I12 implements
   actually created; or `outcome: failed` and `error`). If only that append fails, the response is
   the real outcome and the server logs an error. A partial move is recorded as a failed `move` with
   `error: move_incomplete` (it was a separate `move_incomplete` op before).
+- **Commit:** `68605e2`
 - **Test:** `test/sm-audit.test.ts` "B9 …"; the format is also checked in `api-notes`, `api-mcp`,
   `cli-client` and `sm-move-fault`.
 
