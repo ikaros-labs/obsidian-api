@@ -298,7 +298,7 @@ before the check (and fails it) or after the removal (in a fresh folder).
 
 ## M9. Vault index and watcher
 
-**Lives in** `src/vault-index.ts:36-256` (`VaultIndex`), started by `src/app.ts:21-24`.
+**Lives in** `src/vault-index.ts:36-260` (`VaultIndex`), started by `src/app.ts:21-24`.
 
 **States.** Per path: **Unindexed**, **Indexed(kind, stat, rev, meta)**. Per path refresh queue:
 **Idle**, **Refreshing(+queued)** (`pending`, `vault-index.ts:163-172`). Watcher: **Off**,
@@ -315,21 +315,22 @@ on every change.
 | From | Event | To | Guard | Code |
 | --- | --- | --- | --- | --- |
 | (none) | `build()` | Indexed tree | | `vault-index.ts:73-80` |
-| Off | `watch()` | Starting → Watching | `ready` | `vault-index.ts:231-250` |
-| any path | watcher add/change/unlink/addDir/unlinkDir | `refresh(path)` queued | not a dot-path | `vault-index.ts:242-246` |
+| Off | `watch()` | Starting → Watching | `ready` | `vault-index.ts:235-254` |
+| any path | watcher add/change/unlink/addDir/unlinkDir | `refresh(path)` queued | not a dot-path | `vault-index.ts:246-250` |
 | any path | API write | `refresh(path)` | | `vault.ts` (each op) |
-| Indexed / Unindexed | refresh, `load` finds it | Indexed (and its parent chain) | | `vault-index.ts:174-190` |
+| Indexed / Unindexed | refresh, `load` finds it | Indexed (and its parent chain) | parent indexed, or found on disk by a refresh of it | `vault-index.ts:174-194` |
+| Unindexed | refresh, `load` found it but its parent is gone by then | Unindexed | | `vault-index.ts:182-186` |
 | Indexed | refresh, `load` finds nothing | Unindexed, with its subtree | | `vault-index.ts:177-179` |
-| Indexed(file) | refresh, now a folder | Indexed(folder), contents scanned | | `vault-index.ts:187-189` |
+| Indexed(file) | refresh, now a folder | Indexed(folder), contents scanned | | `vault-index.ts:191-193` |
 | Indexed(folder) | refresh, now a file | Indexed(file), old subtree dropped | | `vault-index.ts:140` |
-| Watching | `close()` | Closed | | `vault-index.ts:252-255` |
+| Watching | `close()` | Closed | | `vault-index.ts:256-259` |
 
-**Reachable invalid state.** **B8** (breaks I9.1, I9.3): refreshes are serialised per path only. A
-refresh of `Gone/x.md` reads the file, then waits; meanwhile `Gone/` is deleted and its own refresh
-drops the subtree. When the first refresh resumes, it finds the parent missing, refreshes the
-parent (gone: nothing to do) and then inserts `Gone/x.md` anyway: a ghost entry under a folder that
-doesn't exist. It shows in search, tags, bases and backlinks until something touches that exact
-path again.
+**Invalid state (fixed by I6).** **B8** (broke I9.1, I9.3): refreshes are serialised per path
+only. A refresh of `Gone/x.md` read the file, then waited; meanwhile `Gone/` was deleted and its own
+refresh dropped the subtree. When the first refresh resumed, it found the parent missing, refreshed
+the parent (gone: nothing to do) and then inserted `Gone/x.md` anyway: a ghost entry under a
+folder that doesn't exist, visible in search, tags, bases and backlinks until something touched
+that exact path again. Now a refresh whose parent can't be indexed stops there.
 
 ---
 
@@ -412,7 +413,7 @@ file and the second rename winning.
 | B5 | M2, M11 | security | `token revoke` after a concurrent edit deletes the wrong token; the one asked for stays valid | `test/sm-cli-tokens.test.ts` "B5 …" (another revoke lands between load and edit) | fixed (I4) |
 | B6 | M2, M11 | wrong user-visible state | Concurrent `token create` + another edit: the printed token is not in the file | `test/sm-cli-tokens.test.ts` "B6 …" (child CLI process vs. a writer holding the file) | fixed (I4) |
 | B7 | M7 | wrong user-visible state (duplicate file) | `unlink` of the source fails after `link`: the file exists at both paths; with EPERM the API answers 409 for its own link; retries keep failing | `test/sm-move-fault.test.ts` (injects EACCES / EPERM on unlink) | fixed (I5) |
-| B8 | M9 | wrong user-visible state | A refresh racing a folder removal leaves a ghost index entry under a missing folder | `test/sm-index-race.test.ts` (parks `VaultIndex.load`) | open |
+| B8 | M9 | wrong user-visible state | A refresh racing a folder removal leaves a ghost index entry under a missing folder | `test/sm-index-race.test.ts` (parks `VaultIndex.load`) | fixed (I6) |
 | B9 | M6 | wrong user-visible state | The audit write fails after the change: 500 for a change that happened; a retried `POST /v1/notes` creates `Title 1.md` | scratch reproduction (audit folder made read-only): first POST 500, retry 201 `Research/Retry me 1.md`, both files on disk | not fixed (D3) |
 
 ## Unconfirmed
@@ -470,14 +471,15 @@ Grouped fixes, in priority order. One commit each, each with the regression test
 - **Impact:** wrong user-visible state (duplicate file, failing retries).
 - **Fix:** only the `link` is in the `try` that picks the no-hard-links fallback; if the following
   `unlink(A)` fails, `move` unlinks B again and rethrows.
-- **Commit:** COMMIT_I5
+- **Commit:** `f84e606`
 - **Test:** `test/sm-move-fault.test.ts`
 
 ### I6. Don't index a path whose parent is gone
 - **Bugs:** B8.
 - **Impact:** wrong user-visible state.
-- **Fix:** —
-- **Commit:** —
+- **Fix:** `doRefresh` returns without indexing a path when refreshing its missing parent didn't
+  index the parent (it is gone).
+- **Commit:** COMMIT_I6
 - **Test:** `test/sm-index-race.test.ts`
 
 ## Decisions

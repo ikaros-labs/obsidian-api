@@ -178,9 +178,13 @@ export class VaultIndex {
       this.removeTree(p);
       return;
     }
-    // Make sure the parent chain is indexed.
+    // Make sure the parent chain is indexed. If the parent is gone by now (deleted while `p` was
+    // being read), so is `p`: indexing it would leave an entry under a missing folder.
     const parent = parentOf(p);
-    if (parent !== '' && !this.entries.has(parent)) await this.doRefresh(parent);
+    if (parent !== '' && !this.entries.has(parent)) {
+      await this.doRefresh(parent);
+      if (!this.entries.has(parent)) return;
+    }
     const existed = this.entries.get(p);
     if (existed) for (const k of linkKey(existed)) this.byName.get(k)?.delete(p);
     this.put(entry);
