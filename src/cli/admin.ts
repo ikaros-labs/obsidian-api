@@ -1,4 +1,5 @@
-import { readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { linkSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { isMap, isSeq, parseDocument } from 'yaml';
@@ -53,22 +54,63 @@ function alive(pid: number): boolean {
   }
 }
 
-/** Takes `.<config>.lock` next to the config, so concurrent `spall token …` runs edit one at a time. */
+/**
+ * Takes `.<config>.lock` next to the (canonical) config, so concurrent `spall token …` runs edit
+ * one at a time. The lock holds `<pid> <nonce>`. It is created whole (written to a private file,
+ * then hard-linked into place), so it is never seen half-written. A lock whose process is gone is
+ * taken over by moving it aside first and checking it is still the one judged stale; if another
+ * run took it over in between, its lock is put back. Release removes the lock only if it is ours.
+ */
 function lockConfig(configPath: string): () => void {
   const lock = path.join(path.dirname(configPath), `.${path.basename(configPath)}.lock`);
+  const mine = `${process.pid} ${randomBytes(8).toString('hex')}`;
+  const nonce = mine.split(' ')[1];
   const deadline = Date.now() + 10_000;
-  for (;;) {
+  const read = (file: string) => {
     try {
-      writeFileSync(lock, String(process.pid), { flag: 'wx' });
-      return () => rmSync(lock, { force: true });
+      return readFileSync(file, 'utf8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw e;
+    }
+  };
+  for (;;) {
+    const tmp = `${lock}.${nonce}`;
+    writeFileSync(tmp, mine);
+    try {
+      linkSync(tmp, lock);
+      return () => {
+        if (read(lock) === mine) rmSync(lock, { force: true });
+      };
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+    } finally {
+      rmSync(tmp, { force: true });
     }
-    const holder = Number(readFileSync(lock, 'utf8'));
-    // Left behind by a process that died: take it over.
-    if (Number.isInteger(holder) && holder > 0 && !alive(holder)) rmSync(lock, { force: true });
-    else if (Date.now() > deadline) fail(`The config is being edited by process ${holder} (lock: ${lock})`);
-    else sleep(50);
+    const held = read(lock);
+    if (held === null) continue; // released meanwhile
+    const holder = Number(held.split(' ')[0]);
+    if (!(Number.isInteger(holder) && holder > 0 && alive(holder))) {
+      // Stale (or not ours to parse): take it over, unless someone else did first.
+      const aside = `${lock}.stale.${nonce}`;
+      try {
+        renameSync(lock, aside);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw e;
+      }
+      if (read(aside) !== held) {
+        try {
+          linkSync(aside, lock);
+        } catch {
+          // Yet another run holds it now; ours to wait for, like any other.
+        }
+      }
+      rmSync(aside, { force: true });
+      continue;
+    }
+    if (Date.now() > deadline) fail(`The config is being edited by process ${holder} (lock: ${lock})`);
+    sleep(50);
   }
 }
 
@@ -76,8 +118,10 @@ function lockConfig(configPath: string): () => void {
  * Edits the config YAML in place (keeping comments), validates the result, then writes it
  * atomically. The read, the edit and the write happen under the config lock, so the edit is made
  * on the file as it is and no other `spall token` run can overwrite it. `edit` throws to abort.
+ * A config reached through a symlink is edited where it really is (the lock lives there too).
  */
-function editConfig(configPath: string, edit: (doc: ReturnType<typeof parseDocument>) => void) {
+function editConfig(configPathGiven: string, edit: (doc: ReturnType<typeof parseDocument>) => void) {
+  const configPath = realpathSync(configPathGiven);
   const unlock = lockConfig(configPath);
   let problem: string | null = null;
   try {
