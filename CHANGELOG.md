@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Fix: a recursive folder delete could remove a file written after its permission check.** Writes now run one at a time under a vault-wide lock, so another account's note created inside the folder while the delete ran is no longer purged or trashed by an account that can't see it. The same lock stops two edits of one note through a symlink alias (with `follow_symlinks`) from losing one of them.
+- **Fix: a failed overwrite no longer leaves a partial note.** If writing a note or file fails halfway (disk full, I/O error), the old content is put back and the request fails with 500, so a retry with the same `If-Match` works.
+- **Config reloads apply everything except restart-only settings.** An edit that changed `server.*`, `vault.path`, `vault.trash` or `vault.follow_symlinks` used to be rejected as a whole, so a token revoked in it (or in any later edit) stayed valid until a restart. Now those settings keep their running values, an error says they need a restart, and everything else (accounts, grants, tokens) applies at once.
+- **Fix: `spall token revoke` could revoke the wrong token,** and concurrent `spall token` runs could lose a created token. Edits now take a `.<config>.lock` file next to the config, and the token is looked up by name in the file being edited.
+- **Fix: a move whose source couldn't be removed left the file under both names** (and could answer 409 for its own destination). The new name is removed again and the error is returned, so a retry starts clean.
+- **Fix: a deleted folder could leave a ghost entry** in search, tags, bases and backlinks when a file inside it was being re-indexed at the same moment.
+
 ## 1.2.3 — 2026-11-19
 
 - **Fix: bases `<`, `>`, `<=`, `>=` with an empty value, as in Obsidian.** An empty side (`Key:` or a missing property) counted as 0, so `Completed < date("2026-01-01")` matched notes with no `Completed` and `Score < 5` matched notes with no `Score`. Now a comparison with an empty side is empty, as in Obsidian: it doesn't match as a filter, `!(…)` of it does, and a formula `Score < 5` shows `null`. Other comparisons follow Obsidian too: a string right of a date or duration is read as one (`Completed < "2026-01-01"`), and a mixed comparison is plain JavaScript (`""` is a string, not empty, so `"" < date(…)` is true). Applies to `.base` views, `/v1/query`, `spall_query_base` and `spall base`.
