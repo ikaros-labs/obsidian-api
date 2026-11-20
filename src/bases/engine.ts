@@ -1,5 +1,6 @@
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { Script, createContext } from 'node:vm';
 import {
   compileExpression,
   compileFilter,
@@ -8,6 +9,7 @@ import {
   dateValue,
   durationToMilliseconds,
   Evaluator,
+  errorValue,
   frontmatterLink,
   fromJs,
   objectValue,
@@ -26,6 +28,7 @@ import {
   type RuntimeValue,
 } from 'obsidian-bases-expression';
 import type { ObsidianType } from '../config.js';
+import { invalidRequest } from '../errors.js';
 import { propertyWikilink } from '../markdown.js';
 import type { Entry, VaultIndex } from '../vault-index.js';
 
@@ -46,6 +49,7 @@ type Scope = Record<string, Value>;
 interface EvaluatorInternals {
   eval(expr: unknown, scope?: Scope): Value;
   evalBinary(op: string, left: unknown, right: unknown, scope: Scope): Value;
+  callMethod(receiver: Value, name: string, argExprs: unknown[], scope: Scope): Value;
   equals(left: Value, right: Value): boolean;
 }
 const ORDERING = new Set(['<', '>', '<=', '>=']);
@@ -91,6 +95,45 @@ proto.evalBinary = function (op, leftExpr, rightExpr, scope) {
           ? right.value
           : stringifyValue(right);
   return boolValue(op === '<' ? a < b : op === '>' ? a > b : op === '<=' ? a <= b : a >= b);
+};
+
+/**
+ * Expressions come from requests and from .base files accounts write, and they run on the one event
+ * loop every account shares. Two limits keep one query from holding it:
+ *
+ * - `withBudget` gives the evaluation of one query a fixed time. The watchdog of `vm` interrupts
+ *   the running JavaScript, including a regex that backtracks, which nothing inside the thread can.
+ * - A method call may not return a string or list far larger than anything a note holds, so
+ *   `"a".repeat(1e9)` and its like fail as a value error instead of allocating.
+ */
+export const EVALUATION_BUDGET_MS = 1000;
+const MAX_VALUE_SIZE = 100_000;
+
+const budgetContext = createContext({});
+const budgetScript = new Script('run()');
+
+export function withBudget<T>(fn: () => T): T {
+  const sandbox = budgetContext as { run?: () => T };
+  sandbox.run = fn;
+  try {
+    return budgetScript.runInContext(budgetContext, { timeout: EVALUATION_BUDGET_MS }) as T;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') {
+      throw invalidRequest(`The query is too expensive: its filters and formulas ran for more than ${EVALUATION_BUDGET_MS} ms. Simplify them or narrow the folders`);
+    }
+    throw e;
+  } finally {
+    delete sandbox.run;
+  }
+}
+
+const libraryCallMethod = proto.callMethod;
+proto.callMethod = function (receiver, name, argExprs, scope) {
+  const out = libraryCallMethod.call(this, receiver, name, argExprs, scope);
+  if ((out.type === 'String' || out.type === 'List') && out.value.length > MAX_VALUE_SIZE) {
+    return errorValue(`The result of ${name}() is too large (more than ${MAX_VALUE_SIZE} ${out.type === 'String' ? 'characters' : 'items'})`);
+  }
+  return out;
 };
 
 export interface SortSpec {

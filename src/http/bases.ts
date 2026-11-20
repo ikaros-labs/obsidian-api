@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { FilterExpression } from 'obsidian-bases-expression';
 import { z } from 'zod';
 import { baseDiagnostics, displayName, parseBase, SortSchema, type BaseFile } from '../bases/base-file.js';
-import { BasesEngine, plainValue, type ViewSpec } from '../bases/engine.js';
+import { BasesEngine, plainValue, withBudget, type ViewSpec } from '../bases/engine.js';
 import { ApiError, invalidRequest, notFound } from '../errors.js';
 import { splitFrontmatter } from '../markdown.js';
 import { isPrefix, join, parsePlainPath } from '../paths.js';
@@ -86,7 +86,7 @@ async function respond(
     ctx.s.engineCache.get(ctx.account, stateKey),
   );
   const toApiPath = (p: string) => ctx.toApi(p);
-  const result = engine.run(rows, spec, { thisFile: meta.thisFile, toApiPath });
+  const result = withBudget(() => engine.run(rows, spec, { thisFile: meta.thisFile, toApiPath }));
   const head = { ...meta.head, columns: spec.columns.map((key) => ({ key, name: meta.names(key) })) };
 
   if (body.count_only) {
@@ -107,8 +107,9 @@ async function respond(
   }
 
   const columnFailures = new Map<string, { message: string; rows: number }>();
-  const results = await Promise.all(
-    selected.map(async (row) => {
+  // Column values are expressions too: evaluated for the whole page under one budget.
+  const pageValues = withBudget(() =>
+    selected.map((row) => {
       const values: Record<string, unknown> = {};
       for (const col of result.compiled.columns) {
         const v = col.compiled.evaluateValue(row.ctx);
@@ -119,9 +120,14 @@ async function respond(
         }
         values[col.id] = plainValue(v, toApiPath);
       }
+      return values;
+    }),
+  );
+  const results = await Promise.all(
+    selected.map(async (row, i) => {
       const out: Record<string, unknown> = { path: ctx.toApi(row.entry.path) };
       if (result.groups) out.group = row.group ? plainValue(row.group, toApiPath) : null;
-      out.values = values;
+      out.values = pageValues[i];
       if (body.include.includes('frontmatter')) out.frontmatter = row.entry.meta?.frontmatter ?? null;
       if (body.include.includes('body') && row.entry.kind === 'note') {
         out.body = splitFrontmatter((await ctx.s.vault.read(row.entry.real ?? row.entry.segs)).toString('utf8')).body;
