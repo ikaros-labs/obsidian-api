@@ -65,7 +65,7 @@ edits (revocations, removed accounts, narrowed grants) until someone restarted. 
 ## M2. Token lifecycle
 
 **Lives in** the `tokens:` lists of the config, `src/tokens.ts`, the auth hook
-`src/http/server.ts:68-86`, and the CLI `src/cli/admin.ts:141-181`.
+`src/http/server.ts:68-86`, and the CLI `src/cli/admin.ts:185-231`.
 
 **States** (per token, derived from the config row and the clock):
 
@@ -86,23 +86,20 @@ What the server enforces is the token's state *in the active config* (M1), not i
 
 | From | Event | To | Guard | Code |
 | --- | --- | --- | --- | --- |
-| Absent | `spall token create` | Active (or Expired if `--expires` is past) | account exists | `admin.ts:144-162` |
+| Absent | `spall token create` | Active (or Expired if `--expires` is past) | account exists | `admin.ts:188-208` |
 | Active | clock passes `expires` | Expired | | `tokens.ts:20-23`, checked per request `server.ts:77` |
-| Active / Expired | `spall token revoke` | Absent | name exists | `admin.ts:174-180` |
+| Active / Expired | `spall token revoke` | Absent | name exists in the file under the lock | `admin.ts:219-229` |
 | any | admin edits the file | anything | file compiles (restart-only settings aside) | via M1 |
 | Active (on disk) | request | authenticated | Active **in the active config** | `server.ts:73-81` |
 
-The CLI edits the file with read → edit → validate → write temp → rename (`editConfig`,
-`admin.ts:46-58`). The rename is atomic, but the read-modify-write is not protected against
-another writer.
+The CLI edits the file with lock → read → edit → validate → write temp → rename → unlock (M11).
 
-**Reachable invalid states.**
-- **B5** (breaks I2.4): `revoke` finds the token's *index* in the config it loaded first
-  (`admin.ts:176`), then re-reads the file and deletes that index (`admin.ts:178`). If another
-  edit removed an earlier token in between, it deletes the wrong token and the one asked for stays
-  Active.
-- **B6** (breaks I2.3): two concurrent edits each read the same file and the second rename wins;
-  the first `token create` printed a token that is not in the file.
+**Invalid states (fixed).**
+- **B5** (broke I2.4, fixed by I4): `revoke` found the token's *index* in the config it loaded
+  first, then re-read the file and deleted that index. If another edit removed an earlier token in
+  between, it deleted the wrong token and the one asked for stayed Active.
+- **B6** (broke I2.3, fixed by I4): two concurrent edits each read the same file and the second
+  rename won; the first `token create` had printed a token that was not in the file.
 - Through **B4** (fixed by I3), a token revoked in the file could stay Active on the server.
 
 ---
@@ -364,27 +361,41 @@ violations found.
 
 ## M11. CLI config edit
 
-**Lives in** `src/cli/admin.ts:46-58` (`editConfig`).
+**Lives in** `src/cli/admin.ts:45-102` (`lockConfig`, `editConfig`, `tokensOf`), used by `token create` and
+`token revoke` (`admin.ts:188-229`).
 
-**States** of one run: **Loaded** (compiled config used to find the account/token), **Read** (YAML
-document), **Edited**, **Validated**, **TempWritten**, **Renamed** (committed).
+**States** of one run: **Loaded** (compiled config, used only to check the account exists),
+**Locked** (holds `.<config>.lock`, containing its pid), **Read** (YAML document), **Edited**
+(token found or named *in this document*), **Validated**, **TempWritten**, **Renamed** (committed),
+**Unlocked**. Lock file states: **Free**, **Held(pid alive)**, **Stale(pid dead)**.
 
 **Invariants.**
 - I11.1 The file on disk is always a complete config (temp file plus rename).
-- I11.2 The edit applies to the file as it is when the edit is written (no lost update).
-- I11.3 What the edit acts on (which token) is decided on the same version of the file it writes.
+- I11.2 The edit applies to the file as it is when the edit is written (no lost update between
+  `spall token` runs).
+- I11.3 What the edit acts on (which token, which default name) is decided on the same version of
+  the file it writes.
+- I11.4 The lock is released on every exit path except a crash; a crashed holder's lock is taken over.
 
-| From | Event | To | Code |
-| --- | --- | --- | --- |
-| start | `loadConfig` | Loaded | `admin.ts:143` |
-| Loaded | `readFileSync` + `parseDocument` | Read | `admin.ts:47` |
-| Read | edit callback | Edited | `admin.ts:48` |
-| Edited | `compileConfig` | Validated (or exit 1) | `admin.ts:50-54` |
-| Validated | write `.spall.yaml.<pid>.tmp` | TempWritten | `admin.ts:55-56` |
-| TempWritten | `rename` | Renamed; the server's watcher reloads (M1) | `admin.ts:57` |
+| From | Event | To | Guard | Code |
+| --- | --- | --- | --- | --- |
+| start | `loadConfig` | Loaded | | `admin.ts:187` |
+| Loaded | `writeFile(lock, pid, 'wx')` | Locked | lock Free | `admin.ts:61-63` |
+| Loaded | lock exists | wait 50 ms, retry | holder alive, < 10 s | `admin.ts:67,71` |
+| Loaded | lock exists | take over, retry | holder dead | `admin.ts:68-69` |
+| Loaded | lock exists | exit 1 | holder alive, ≥ 10 s | `admin.ts:70` |
+| Locked | read + `parseDocument` | Read | | `admin.ts:84` |
+| Read | edit callback | Edited (or abort) | token name exists (revoke) | `admin.ts:85, 193-204, 221-226` |
+| Edited | `compileConfig` | Validated (or abort) | | `admin.ts:87` |
+| Validated | write temp, `rename` | Renamed; the server's watcher reloads (M1) | | `admin.ts:88-90` |
+| any of the above | done or aborted | Unlocked; exit 1 on abort | | `admin.ts:91-96` |
 
-**Reachable invalid states.** **B5** breaks I11.3 (index from Loaded, applied to Read); **B6**
-breaks I11.2 (no lock between Read and Renamed).
+The admin's own editor doesn't take the lock; an edit saved in the middle of a `spall token` run
+can still be overwritten by it (the window is a few milliseconds). See U6.
+
+**Invalid states (fixed by I4).** **B5** broke I11.3: `revoke` took the token's index from Loaded
+and deleted that index in Read. **B6** broke I11.2: nothing stopped two runs from each reading the
+file and the second rename winning.
 
 ---
 
@@ -398,8 +409,8 @@ breaks I11.2 (no lock between Read and Renamed).
 | B2 | M5, M6 | data loss | Two PATCHes of one note through a symlink alias and its real path both apply to the old text; one edit is lost | `test/sm-write-lock.test.ts` "B2 …" (parks `Vault.overwrite`) | fixed (I1) |
 | B3 | M6 | data loss | A write that fails after truncating (ENOSPC, EIO) leaves a partial note and returns 500 | `test/sm-overwrite-fault.test.ts` (injects ENOSPC after 3 bytes) | fixed (I2) |
 | B4 | M1, M2 | security | A config edit that also touches a restart-only setting is ignored entirely, so a token revoked in it stays valid until restart | `test/sm-config-reload.test.ts` | fixed (I3) |
-| B5 | M2, M11 | security | `token revoke` after a concurrent edit deletes the wrong token; the one asked for stays valid | `test/sm-cli-tokens.test.ts` "B5 …" (another revoke lands between load and edit) | open |
-| B6 | M2, M11 | wrong user-visible state | Concurrent `token create` + another edit: the printed token is not in the file | `test/sm-cli-tokens.test.ts` "B6 …" (child CLI process vs. a writer holding the file) | open |
+| B5 | M2, M11 | security | `token revoke` after a concurrent edit deletes the wrong token; the one asked for stays valid | `test/sm-cli-tokens.test.ts` "B5 …" (another revoke lands between load and edit) | fixed (I4) |
+| B6 | M2, M11 | wrong user-visible state | Concurrent `token create` + another edit: the printed token is not in the file | `test/sm-cli-tokens.test.ts` "B6 …" (child CLI process vs. a writer holding the file) | fixed (I4) |
 | B7 | M7 | wrong user-visible state (duplicate file) | `unlink` of the source fails after `link`: the file exists at both paths; with EPERM the API answers 409 for its own link; retries keep failing | `test/sm-move-fault.test.ts` (injects EACCES / EPERM on unlink) | open |
 | B8 | M9 | wrong user-visible state | A refresh racing a folder removal leaves a ghost index entry under a missing folder | `test/sm-index-race.test.ts` (parks `VaultIndex.load`) | open |
 | B9 | M6 | wrong user-visible state | The audit write fails after the change: 500 for a change that happened; a retried `POST /v1/notes` creates `Title 1.md` | scratch reproduction (audit folder made read-only): first POST 500, retry 201 `Research/Retry me 1.md`, both files on disk | not fixed (D3) |
@@ -412,6 +423,7 @@ breaks I11.2 (no lock between Read and Renamed).
 | U2 | A crash between `link` and `unlink` in a move leaves the file at both paths (M7); a retry then answers 409. | Needs a real crash between two syscalls. | Same kill-in-the-middle harness. A fix needs a journal or `renameat2(RENAME_NOREPLACE)`, which Node doesn't expose. |
 | U3 | External tools (Obsidian, sync) racing API writes: the "no hard links" move fallback checks then renames and could overwrite a file created in between; `PUT` checks `kindOf` then creates. | The window is between two syscalls; API-vs-API is covered by the lock (M5), external writers can't take it. | A filesystem without hard links (e.g. some FUSE/SMB mounts) plus a writer injected between `kindOf` and `rename`. |
 | U4 | Case-insensitive filesystems: grants and locks compare case-folded keys, the index is case-sensitive. A file renamed only in case externally could show twice until the watcher settles. | Not reproducible on the Linux CI filesystem. | Run the suite on APFS/NTFS. |
+| U6 | The admin saving the config in an editor during a `spall token` run: the editor doesn't take the lock, so one of the two writes can be lost. | Needs an editor save inside a few-millisecond window. | Same harness as B6 with an unlocked writer; a fix would be compare-and-swap on the file's content before the rename. |
 | U5 | Watcher event storms (`git checkout` of thousands of files) while API writes run: refreshes are per path, so I9.3 should hold once quiet; not stress-tested. | No deterministic interleaving found beyond B8. | A property test that applies random external ops and API ops, waits for quiet, then diffs `VaultIndex` against a fresh `build()`. |
 
 ## Issues
@@ -441,14 +453,16 @@ Grouped fixes, in priority order. One commit each, each with the regression test
 - **Fix:** `Config` keeps its raw YAML. `reload()` compiles the new file with the running
   restart-only settings put back, applies it, and logs that those settings need a restart. The old
   test "rejects reloads that change restart-only settings" now checks the new behaviour.
-- **Commit:** COMMIT_I3
+- **Commit:** `6624f91`
 - **Test:** `test/sm-config-reload.test.ts`, `test/config.test.ts` ("keeps restart-only settings…")
 
 ### I4. Lock CLI config edits and decide inside the lock
 - **Bugs:** B5, B6.
 - **Impact:** security, wrong user-visible state.
-- **Fix:** —
-- **Commit:** —
+- **Fix:** `editConfig` takes `.<config>.lock` (`O_EXCL`, holds the pid; waits up to 10 s; takes over
+  a dead holder's lock) around read → edit → validate → rename. `revoke` finds the token by name and
+  `create` picks its default name in the document being edited.
+- **Commit:** COMMIT_I4
 - **Test:** `test/sm-cli-tokens.test.ts`
 
 ### I5. Undo the link when a move's unlink fails

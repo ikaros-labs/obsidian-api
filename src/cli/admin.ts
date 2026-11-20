@@ -1,7 +1,7 @@
-import { readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { isSeq, parseDocument } from 'yaml';
+import { isMap, isSeq, parseDocument } from 'yaml';
 import { PERMS } from '../access.js';
 import { createApp } from '../app.js';
 import { ConfigManager, compileConfig, loadConfig, parseConfigText, type Config } from '../config.js';
@@ -42,20 +42,64 @@ function account(cfg: Config, name: string | undefined) {
 
 const today = () => new Date().toISOString().slice(0, 10);
 
-/** Edits the config YAML in place (keeping comments), validates the result, then writes it atomically. */
-function editConfig(configPath: string, edit: (doc: ReturnType<typeof parseDocument>) => void) {
-  const doc = parseDocument(readFileSync(configPath, 'utf8'));
-  edit(doc);
-  const text = String(doc);
+const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+function alive(pid: number): boolean {
   try {
-    compileConfig(parseConfigText(text), configPath);
+    process.kill(pid, 0);
+    return true;
   } catch (e) {
-    fail(e instanceof ConfigError ? e.message : String(e));
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
   }
-  const tmp = path.join(path.dirname(configPath), `.${path.basename(configPath)}.${process.pid}.tmp`);
-  writeFileSync(tmp, text, { mode: statSync(configPath).mode });
-  renameSync(tmp, configPath);
 }
+
+/** Takes `.<config>.lock` next to the config, so concurrent `spall token …` runs edit one at a time. */
+function lockConfig(configPath: string): () => void {
+  const lock = path.join(path.dirname(configPath), `.${path.basename(configPath)}.lock`);
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    try {
+      writeFileSync(lock, String(process.pid), { flag: 'wx' });
+      return () => rmSync(lock, { force: true });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+    }
+    const holder = Number(readFileSync(lock, 'utf8'));
+    // Left behind by a process that died: take it over.
+    if (Number.isInteger(holder) && holder > 0 && !alive(holder)) rmSync(lock, { force: true });
+    else if (Date.now() > deadline) fail(`The config is being edited by process ${holder} (lock: ${lock})`);
+    else sleep(50);
+  }
+}
+
+/**
+ * Edits the config YAML in place (keeping comments), validates the result, then writes it
+ * atomically. The read, the edit and the write happen under the config lock, so the edit is made
+ * on the file as it is and no other `spall token` run can overwrite it. `edit` throws to abort.
+ */
+function editConfig(configPath: string, edit: (doc: ReturnType<typeof parseDocument>) => void) {
+  const unlock = lockConfig(configPath);
+  let problem: string | null = null;
+  try {
+    const doc = parseDocument(readFileSync(configPath, 'utf8'));
+    edit(doc);
+    const text = String(doc);
+    compileConfig(parseConfigText(text), configPath);
+    const tmp = path.join(path.dirname(configPath), `.${path.basename(configPath)}.${process.pid}.tmp`);
+    writeFileSync(tmp, text, { mode: statSync(configPath).mode });
+    renameSync(tmp, configPath);
+  } catch (e) {
+    problem = e instanceof Error ? e.message : String(e);
+  } finally {
+    unlock();
+  }
+  if (problem !== null) fail(problem);
+}
+
+const tokensOf = (doc: ReturnType<typeof parseDocument>, account: string) => {
+  const tokens = doc.getIn(['accounts', account, 'tokens']);
+  return isSeq(tokens) ? tokens : null;
+};
 
 async function serve(configPath: string) {
   const configs = (() => {
@@ -144,17 +188,18 @@ export async function adminMain(argv: string[]) {
       if (sub === 'create') {
         const a = account(cfg, accountName);
         if (values.expires !== undefined && expiryTime(values.expires) === null) fail('--expires: expected YYYY-MM-DD');
-        const tokenNameNew = values.name ?? `token-${a.tokens.length + 1}`;
         const token = generateToken();
+        let tokenNameNew = '';
         editConfig(configPath, (doc) => {
+          const tokens = tokensOf(doc, a.name);
+          tokenNameNew = values.name ?? `token-${(tokens?.items.length ?? 0) + 1}`;
           const entry = {
             name: tokenNameNew,
             sha256: hashToken(token),
             created: today(),
             ...(values.expires ? { expires: values.expires } : {}),
           };
-          const tokens = doc.getIn(['accounts', a.name, 'tokens']);
-          if (isSeq(tokens)) tokens.add(doc.createNode(entry));
+          if (tokens) tokens.add(doc.createNode(entry));
           else doc.setIn(['accounts', a.name, 'tokens'], doc.createNode([entry]));
         });
         console.error(`Created token "${tokenNameNew}" for ${a.name}. It is shown only once:`);
@@ -173,9 +218,12 @@ export async function adminMain(argv: string[]) {
       }
       if (sub === 'revoke') {
         const a = account(cfg, accountName);
-        const idx = a.tokens.findIndex((t) => t.name === tokenName);
-        if (idx === -1) fail(`No token "${tokenName}" for ${a.name}`);
-        editConfig(configPath, (doc) => doc.deleteIn(['accounts', a.name, 'tokens', idx]));
+        editConfig(configPath, (doc) => {
+          // Found by name in the file being edited: another edit may have changed the list.
+          const idx = tokensOf(doc, a.name)?.items.findIndex((t) => isMap(t) && t.get('name') === tokenName) ?? -1;
+          if (idx === -1) throw new Error(`No token "${tokenName}" for ${a.name}`);
+          doc.deleteIn(['accounts', a.name, 'tokens', idx]);
+        });
         console.log(`Revoked token "${tokenName}" for ${a.name}`);
         return;
       }
