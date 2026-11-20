@@ -58,4 +58,40 @@ describe('recursive folder delete only removes what the account may delete', () 
       expect((await env.req('admin', { method: 'DELETE', url: '/v1/folders/Shared?recursive=true&permanent=true' })).statusCode).toBe(204);
     }
   });
+
+  // Review round: the same holds when the write arrives under another name for the folder (a
+  // symlink) or as the destination of a move. A write that was answered 2xx is never trashed.
+  it('F-12: writes through a symlink alias and moves into the folder are never trashed either', async () => {
+    env = await setup({
+      vault: { follow_symlinks: true },
+      accounts: {
+        cleaner: { access: { Shared: 'full', 'Shared/Sub/secret.md': 'none', 'Shared/Sub/moved.md': 'none' } },
+        writer: { access: { Door: 'full', Out: 'full', 'Shared/Sub': 'full' } },
+        admin: { access: { '.': ['read', 'create', 'update', 'delete', 'purge'] } },
+      },
+      prepare: (vault) => {
+        for (let n = 0; n < 40; n++) mkdirSync(path.join(vault, '.trash', n === 0 ? 'Shared' : `Shared ${n}`), { recursive: true });
+        mkdirSync(path.join(vault, 'Shared/Sub'), { recursive: true });
+        mkdirSync(path.join(vault, 'Out'), { recursive: true });
+        symlinkSync(path.join(vault, 'Shared/Sub'), path.join(vault, 'Door'));
+      },
+    });
+    const md = { 'content-type': 'text/markdown' };
+    for (let i = 0; i < 8; i++) {
+      await env.req('admin', { method: 'POST', url: '/v1/folders/Shared/Sub' });
+      expect((await env.req('writer', { method: 'PUT', url: '/v1/notes/Out/m.md', payload: `m ${i}`, headers: md })).statusCode).toBeLessThan(300);
+      const [d, p, m] = await Promise.all([
+        env.req('cleaner', { method: 'DELETE', url: '/v1/folders/Shared?recursive=true' }),
+        env.req('writer', { method: 'PUT', url: '/v1/notes/Door/secret.md', payload: `secret ${i}`, headers: md }),
+        env.req('writer', { method: 'POST', url: '/v1/notes/Out/m/move', payload: { destination: 'Shared/Sub/moved.md' } }),
+      ]);
+      expect([204, 403, 409]).toContain(d.statusCode);
+      if (p.statusCode < 300) expect(existsSync(path.join(env.vault, 'Shared/Sub/secret.md')), `alias write ${i}`).toBe(true);
+      if (m.statusCode < 300) expect(existsSync(path.join(env.vault, 'Shared/Sub/moved.md')), `move ${i}`).toBe(true);
+      // At least one of the three took effect, whatever the order.
+      expect([d, p, m].some((r) => r.statusCode < 300)).toBe(true);
+      await env.req('admin', { method: 'DELETE', url: '/v1/folders/Shared?recursive=true&permanent=true' });
+      await env.req('admin', { method: 'DELETE', url: '/v1/notes/Out/m.md?permanent=true' });
+    }
+  });
 });

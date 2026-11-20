@@ -56,4 +56,28 @@ describe('on_conflict=rename and denied siblings', () => {
     expect(res.json().error.code).toBe('already_exists');
     expect(existsSync(path.join(env.vault, 'Solo/One 1.md'))).toBe(false);
   });
+
+  // Review round: the name chosen decides what the response shows, not the name asked for.
+  it('shapes the response by the permissions on the chosen name', async () => {
+    const env = await setup({
+      accounts: { mixed: { access: { Src: 'full', In: 'append', 'In/Note.md': 'edit' } }, admin: { access: { '.': 'full' } } },
+      prepare: (vault) => {
+        mkdirSync(path.join(vault, 'Src'), { recursive: true });
+        mkdirSync(path.join(vault, 'In'), { recursive: true });
+        writeFileSync(path.join(vault, 'Src/a.md'), '---\nk: 1\n---\nbody a');
+        writeFileSync(path.join(vault, 'In/Note.md'), 'taken');
+      },
+    });
+    envs.push(env);
+    // In/Note.md is readable, but the free names beside it are create-only.
+    const created = await env.req('mixed', { method: 'POST', url: '/v1/notes', payload: { folder: 'In', title: 'Note', body: 'x', on_conflict: 'rename' } });
+    expect(created.statusCode).toBe(201);
+    expect(Object.keys(created.json()).sort()).toEqual(['path', 'rev']);
+    expect(created.json().path).toBe('In/Note 1.md');
+    const moved = await env.req('mixed', { method: 'POST', url: '/v1/notes/Src/a/move', payload: { destination: 'In/Note', on_conflict: 'rename' } });
+    expect(moved.statusCode).toBe(200);
+    expect(Object.keys(moved.json()).sort()).toEqual(['path', 'rev']);
+    expect(moved.json().path).toBe('In/Note 2.md');
+    expect((await env.req('mixed', { method: 'GET', url: '/v1/notes/In/Note%202.md' })).statusCode).toBe(404);
+  });
 });
