@@ -153,34 +153,37 @@ that changes the limit opens a fresh window (cosmetic, admin-triggered).
 
 ## M5. Vault write lock
 
-**Lives in** `src/vault.ts:10-34` (`Locks`), used by `putFile`, `deleteFile`, `moveFile`
-(`fileops.ts`), PATCH (`notes.ts:125`) and folder DELETE (`folders.ts:272`).
+**Lives in** `src/vault.ts:9-23` (`WriteLock`, `Vault.writes`), taken by every API write: PUT,
+DELETE and move (`fileops.ts:109,155,179`), `POST /v1/notes` and PATCH (`notes.ts:93,127`),
+folder create and delete (`folders.ts:255,274`). Reads never take it.
 
-**States** per key: **Free**, **Held**, **Held+queued(n)**. Keys are the lower-cased *requested*
-vault path; a call takes all its keys in sorted order (no deadlock).
+*Before I1* it was a per-key mutex (`Locks`) keyed by the lower-cased *requested* path, taken by
+PUT, DELETE, move, PATCH and folder DELETE only.
 
-**Invariants (intended).**
+**States:** **Free**, **Held**, **Held+queued(n)** (one promise chain, FIFO).
+
+**Invariants.**
 - I5.1 Two API operations that touch the same file never interleave their read-check-write steps.
 - I5.2 An operation that checks a whole folder (recursive delete) sees no API write land inside
   that folder between its check and its action.
+- I5.3 A failed write releases the lock (the chain swallows the rejection; the caller still gets it).
 
 | From | Event | To | Code |
 | --- | --- | --- | --- |
-| Free | `run(keys)` | Held | `vault.ts:16-27` |
-| Held | `run(keys)` from another request | Held+queued | `vault.ts:17-26` |
-| Held(+queued) | `fn` settles | Free / next in queue | `vault.ts:30-31` |
+| Free | `writes.run(fn)` | Held | `vault.ts:17-21` |
+| Held | `writes.run(fn)` from another request | Held+queued | `vault.ts:18-19` |
+| Held(+queued) | `fn` resolves or rejects | Free / next in queue | `vault.ts:19-20` |
 
-Not locked at all: `POST /v1/notes` (`notes.ts:90-117`, safe by `O_EXCL` plus retry) and
-`POST /v1/folders` (`folders.ts:251-263`, safe by `mkdir` `EEXIST`).
+External writers (Obsidian, sync) can't take the lock; see U3.
 
-**Reachable invalid states.**
-- **B1** (breaks I5.2): folder DELETE locks only the folder's own key; a PUT into the folder locks
-  the file's key. Both run at once, so the recursive delete's "everything inside is visible and
-  deletable" check (`folders.ts:280-286`) can pass, then a file another account just wrote is
-  purged or trashed by an account that may not even see it.
-- **B2** (breaks I5.1): keys are requested paths, not real ones. With `follow_symlinks`, `Alias/Plan.md`
-  and `Research/Plan.md` are one file under two keys, so two PATCHes read the same old text and the
-  second write loses the first.
+**Invalid states (fixed by I1).**
+- **B1** (broke I5.2): folder DELETE locked only the folder's own key; a PUT into the folder locked
+  the file's key. Both ran at once, so the recursive delete's "everything inside is visible and
+  deletable" check (`folders.ts:282-288`) could pass, then a file another account had just written
+  was purged or trashed by an account that couldn't even see it.
+- **B2** (broke I5.1): keys were requested paths, not real ones. With `follow_symlinks`,
+  `Alias/Plan.md` and `Research/Plan.md` are one file under two keys, so two PATCHes read the same
+  old text and the second write lost the first.
 
 ---
 
@@ -286,8 +289,10 @@ caller can't see or can't delete)**, **Trashed**.
 | NonEmpty(visible) | DELETE `recursive=true` | Trashed / Absent | check passes | `folders.ts:280-290` |
 | NonEmpty(hidden) | DELETE `recursive=true` | 409 / 403 | check fails | `folders.ts:284-285` |
 
-**Reachable invalid state.** **B1** (M5): between the check and the trash/purge, another request
-turns NonEmpty(visible) into NonEmpty(hidden), and the hidden file is removed anyway.
+**Invalid state (fixed by I1).** **B1** (M5): between the check and the trash/purge, another request
+could turn NonEmpty(visible) into NonEmpty(hidden), and the hidden file was removed anyway. The
+check and the removal now run under the write lock, so an API write inside the folder lands either
+before the check (and fails it) or after the removal (in a fresh folder).
 
 ---
 
@@ -386,8 +391,8 @@ breaks I11.2 (no lock between Read and Renamed).
 
 | Bug | Machine | Impact | What happens | Reproduced by | Status |
 | --- | --- | --- | --- | --- | --- |
-| B1 | M5, M8 | data loss, security | Recursive folder delete purges/trashes a file another account wrote after the permission check; the deleter could not see it | `test/sm-write-lock.test.ts` "B1 …" (parks `Vault.purge`, runs the other account's PUT) | open |
-| B2 | M5, M6 | data loss | Two PATCHes of one note through a symlink alias and its real path both apply to the old text; one edit is lost | `test/sm-write-lock.test.ts` "B2 …" (parks `Vault.overwrite`) | open |
+| B1 | M5, M8 | data loss, security | Recursive folder delete purges/trashes a file another account wrote after the permission check; the deleter could not see it | `test/sm-write-lock.test.ts` "B1 …" (parks `Vault.purge`, runs the other account's PUT) | fixed (I1) |
+| B2 | M5, M6 | data loss | Two PATCHes of one note through a symlink alias and its real path both apply to the old text; one edit is lost | `test/sm-write-lock.test.ts` "B2 …" (parks `Vault.overwrite`) | fixed (I1) |
 | B3 | M6 | data loss | A write that fails after truncating (ENOSPC, EIO) leaves a partial note and returns 500 | `test/sm-overwrite-fault.test.ts` (injects ENOSPC after 3 bytes) | open |
 | B4 | M1, M2 | security | A config edit that also touches a restart-only setting is ignored entirely, so a token revoked in it stays valid until restart | `test/sm-config-reload.test.ts` | open |
 | B5 | M2, M11 | security | `token revoke` after a concurrent edit deletes the wrong token; the one asked for stays valid | `test/sm-cli-tokens.test.ts` "B5 …" (another revoke lands between load and edit) | open |
@@ -413,8 +418,10 @@ Grouped fixes, in priority order. One commit each, each with the regression test
 ### I1. One write lock for the whole vault
 - **Bugs:** B1, B2.
 - **Impact:** data loss, security.
-- **Fix:** —
-- **Commit:** —
+- **Fix:** replace the per-path `Locks` with one FIFO `WriteLock` on the `Vault`, and take it in
+  every write route, including `POST /v1/notes` and `POST /v1/folders`, which took none. `moveFile`
+  now also works out its destination (folder or file) inside the lock.
+- **Commit:** COMMIT_I1
 - **Test:** `test/sm-write-lock.test.ts`
 
 ### I2. Roll back a failed in-place overwrite

@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { ApiError, alreadyExists, forbidden, invalidRequest, notFound } from '../errors.js';
 import { joinFrontmatter, outline } from '../markdown.js';
 import { PatchBodySchema, applyPatch } from '../patch.js';
-import { join, parsePlainPath, sanitizeTitle, withMdExtension } from '../paths.js';
+import { parsePlainPath, sanitizeTitle, withMdExtension } from '../paths.js';
 import { revOf } from '../vault-index.js';
 import { Ctx, etag, header, negotiate, parse, parseEtagList, project, type Services } from './context.js';
 import { checkIfMatch, checkNotANote, DeleteQuery, deleteFile, MoveBody, moveFile, noteJson, putFile, stripMove } from './fileops.js';
@@ -90,30 +90,32 @@ export function noteRoutes(app: FastifyInstance, s: Services) {
   app.post('/v1/notes', { schema: doc({ summary: 'Create a note from a title (the file name is derived from it)', tag: 'Notes', body: CreateBody }) }, async (req, reply) => {
     const ctx = new Ctx(req, s);
     const b = parse(CreateBody, req.body);
-    const folder = await s.vault.resolve(ctx.toVault(parsePlainPath(b.folder)));
-    const name = `${sanitizeTitle(b.title)}.md`;
-    const perms = ctx.perms([...folder, name]);
-    if (!perms.has('create')) throw perms.has('read') ? forbidden('create') : notFound();
-    if ((await s.vault.kindOf(folder)) === 'file') throw new ApiError(400, 'invalid_path', 'folder is a file');
+    return s.vault.writes.run(async () => {
+      const folder = await s.vault.resolve(ctx.toVault(parsePlainPath(b.folder)));
+      const name = `${sanitizeTitle(b.title)}.md`;
+      const perms = ctx.perms([...folder, name]);
+      if (!perms.has('create')) throw perms.has('read') ? forbidden('create') : notFound();
+      if ((await s.vault.kindOf(folder)) === 'file') throw new ApiError(400, 'invalid_path', 'folder is a file');
 
-    const data = Buffer.from(renderNote(b.frontmatter, b.body), 'utf8');
-    let target = [...folder, name];
-    for (let attempt = 0; ; attempt++) {
-      try {
-        await s.vault.create(target, data);
-        break;
-      } catch (e) {
-        if (!(e instanceof ApiError && e.code === 'already_exists') || b.on_conflict === 'fail' || attempt > 50) {
-          throw e instanceof ApiError && e.code === 'already_exists' ? alreadyExists(ctx.toApi(target)) : e;
+      const data = Buffer.from(renderNote(b.frontmatter, b.body), 'utf8');
+      let target = [...folder, name];
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await s.vault.create(target, data);
+          break;
+        } catch (e) {
+          if (!(e instanceof ApiError && e.code === 'already_exists') || b.on_conflict === 'fail' || attempt > 50) {
+            throw e instanceof ApiError && e.code === 'already_exists' ? alreadyExists(ctx.toApi(target)) : e;
+          }
+          target = await s.vault.freePath(target);
         }
-        target = await s.vault.freePath(target);
       }
-    }
-    const rev = revOf(data);
-    await ctx.audit('create', target, { new_rev: rev });
-    reply.code(201).header('etag', etag(rev));
-    if (!perms.has('read')) return { path: ctx.toApi(target), rev };
-    return noteJson(ctx, target, data.toString('utf8'));
+      const rev = revOf(data);
+      await ctx.audit('create', target, { new_rev: rev });
+      reply.code(201).header('etag', etag(rev));
+      if (!perms.has('read')) return { path: ctx.toApi(target), rev };
+      return noteJson(ctx, target, data.toString('utf8'));
+    });
   });
 
   app.patch('/v1/notes/*', { schema: doc({ summary: 'Edit frontmatter, sections or text in place', tag: 'Notes', url: '/v1/notes/{path}', query: NoteQuery, body: PatchBodySchema }) }, async (req, reply) => {
@@ -122,7 +124,7 @@ export function noteRoutes(app: FastifyInstance, s: Services) {
     const body = parse(PatchBodySchema, req.body);
     const segs = await notePath(ctx);
     const ifMatch = body.if_match ? [body.if_match] : parseEtagList(header(req, 'if-match'));
-    return s.vault.locks.run([join(segs)], async () => {
+    return s.vault.writes.run(async () => {
       const real = await ctx.resolve(segs, 'read', 'update');
       const before = await s.vault.read(real);
       const oldRev = revOf(before);

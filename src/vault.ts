@@ -6,30 +6,18 @@ import type { VaultIndex } from './vault-index.js';
 
 const errno = (e: unknown) => (e as NodeJS.ErrnoException).code;
 
-/** Per-key async mutex. */
-class Locks {
-  private tails = new Map<string, Promise<void>>();
+/**
+ * One lock for every API write. Writes are a few local file operations, so running them one at a
+ * time is cheap, and it rules out every interleaving between them: two names for one file (case,
+ * symlinks), a folder delete and a write inside the folder, two moves picking the same free name.
+ */
+class WriteLock {
+  private tail: Promise<unknown> = Promise.resolve();
 
-  async run<T>(keys: string[], fn: () => Promise<T>): Promise<T> {
-    const sorted = [...new Set(keys.map((k) => k.toLowerCase()))].sort();
-    const releases: (() => void)[] = [];
-    for (const key of sorted) {
-      const prev = this.tails.get(key) ?? Promise.resolve();
-      let release!: () => void;
-      const mine = new Promise<void>((r) => (release = r));
-      const tail = prev.then(() => mine);
-      this.tails.set(key, tail);
-      releases.push(() => {
-        release();
-        if (this.tails.get(key) === tail) this.tails.delete(key);
-      });
-      await prev;
-    }
-    try {
-      return await fn();
-    } finally {
-      releases.reverse().forEach((r) => r());
-    }
+  run<T>(fn: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(fn);
+    this.tail = result.catch(() => {});
+    return result;
   }
 }
 
@@ -38,7 +26,7 @@ class Locks {
  * path really points inside the vault and keeps the index in sync.
  */
 export class Vault {
-  readonly locks = new Locks();
+  readonly writes = new WriteLock();
 
   constructor(
     readonly root: string,

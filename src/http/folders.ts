@@ -252,14 +252,16 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
     const ctx = new Ctx(req, s);
     const segs = ctx.urlPath(PREFIX);
     if (segs.length === ctx.account.root.length) throw alreadyExists('');
-    const real = await s.vault.resolve(segs);
-    const perms = ctx.perms(real);
-    if (!perms.has('create')) throw perms.has('read') ? forbidden('create') : notFound();
-    if ((await s.vault.kindOf(real)) !== null) throw alreadyExists(ctx.toApi(real));
-    await s.vault.mkdir(real);
-    await ctx.audit('mkdir', real);
-    reply.code(201);
-    return { kind: 'folder', path: ctx.toApi(real) };
+    return s.vault.writes.run(async () => {
+      const real = await s.vault.resolve(segs);
+      const perms = ctx.perms(real);
+      if (!perms.has('create')) throw perms.has('read') ? forbidden('create') : notFound();
+      if ((await s.vault.kindOf(real)) !== null) throw alreadyExists(ctx.toApi(real));
+      await s.vault.mkdir(real);
+      await ctx.audit('mkdir', real);
+      reply.code(201);
+      return { kind: 'folder', path: ctx.toApi(real) };
+    });
   });
 
   app.delete('/v1/folders/*', { schema: doc({ summary: 'Delete a folder (recursive=true for non-empty ones)', tag: 'Folders', url: '/v1/folders/{path}', query: DeleteQuery }) }, async (req, reply) => {
@@ -269,7 +271,7 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
     const perm = permanent ? 'purge' : 'delete';
     const segs = ctx.urlPath(PREFIX);
     if (segs.length === ctx.account.root.length) throw invalidRequest('The root folder cannot be deleted');
-    return s.vault.locks.run([join(segs)], async () => {
+    return s.vault.writes.run(async () => {
       const real = await ctx.resolve(segs, 'read', perm);
       if ((await s.vault.kindOf(real)) !== 'folder') throw notFound();
       if (q.recursive !== 'true') {
