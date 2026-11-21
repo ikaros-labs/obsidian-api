@@ -172,7 +172,7 @@ A path under `/v1/notes/` that names a visible non-note file (`Reading List.base
 
 A `.md` file can also be reached here as plain bytes.
 
-A `PUT` of a `.base` file is validated first: it must be YAML with a valid base structure, and every filter and formula expression must parse. Otherwise it returns 422 `invalid_base` (with `details.diagnostics` for expressions) and nothing is written. This is how `.base` files are edited; create and update grants apply as for notes.
+A `PUT` of a `.base` file is validated first: it must be YAML with a valid base structure, and every filter and formula expression must parse. Otherwise it returns 422 `invalid_base` (with `details.yaml_error` for YAML that doesn't parse, `details.issues` for the structure and `details.diagnostics` for expressions) and nothing is written. This is how `.base` files are edited; create and update grants apply as for notes.
 
 ### Folders
 
@@ -347,7 +347,7 @@ accounts:
 ```
 
 - **Strict validation.** A zod schema rejects unknown keys and wrong types at startup. The same schema is exported as JSON Schema, so your editor can autocomplete the config.
-- **Hot reload.** The config reloads when the file changes or on SIGHUP. If the new version is invalid, the server keeps the old one and logs the error.
+- **Hot reload.** The config reloads when the file changes or on SIGHUP. If the new version is invalid, the server keeps the old one and logs the error. `server` and `vault.path`/`trash`/`follow_symlinks` only change at a restart; a reload keeps the running values and applies the rest, so a revoked token stops working at once.
 - **Tokens.**
   - Tokens look like `spl_` + 43 base64url characters (256 random bits). The prefix lets secret scanners spot a leaked token.
   - The config stores only a SHA-256 hash of each token. Because the tokens are high-entropy, a slow hash like bcrypt isn't needed.
@@ -512,6 +512,7 @@ Response for the "To read" view:
   - A filter that reads a note property none of the queried notes has gets a diagnostic, naming the property with the same name in another case if there is one: `Unknown property "status": no queried note has it. Did you mean "Status"?`
   - Runtime failures are counted per expression: `{ where, message, rows }`.
   - A `.base` file that isn't valid YAML returns 422 `invalid_base`.
+  - Expressions have limits, because every account shares one process. A query gets 1 s for all of its work on the server's event loop: parsing the base, compiling, listing the rows, filtering, sorting, paging and building the response (over it: 400 `invalid_request`). Waiting for file reads doesn't count, and neither does parsing the request body or serialising the response, which are bounded by `server.max_body` and by the result limits. A value an expression reads or builds may render to at most 100,000 characters (list items, link targets and display texts included); over it, the expression is a value error in `diagnostics`. That includes a note property that large: other properties of the note still work.
 - **No view at all:** a base without `views` runs its global filters, with `file.name` plus the keys of `properties` as columns.
 
 ### `POST /v1/query`

@@ -17,7 +17,9 @@ export function expiryTime(expires: string | null | undefined): number | null {
   return Number.isNaN(t) ? null : t;
 }
 
+/** A token with an expiry that can't be read is expired, not valid for ever. */
 export function isExpired(expires: string | null | undefined, now = Date.now()): boolean {
+  if (!expires) return false;
   const t = expiryTime(expires);
-  return t !== null && now >= t;
+  return t === null || now >= t;
 }

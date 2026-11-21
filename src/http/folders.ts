@@ -6,6 +6,7 @@ import { splitFrontmatter } from '../markdown.js';
 import { join, parsePlainPath, split } from '../paths.js';
 import { entryName, type Entry, type Kind } from '../vault-index.js';
 import { Ctx, iso, parse, project, type Services } from './context.js';
+import { writablePath } from './fileops.js';
 import { doc } from './openapi.js';
 import { cursorKey, page as pageOf, sample } from './paging.js';
 import { checkKeys, checkOrdered, isEmpty, matches, parseWhere } from './where.js';
@@ -56,9 +57,10 @@ interface Item {
 
 /** The folder entry to list, if the account may list it at all. */
 export async function listableFolder(ctx: Ctx, segs: string[]): Promise<Entry> {
-  await ctx.s.vault.resolve(segs);
+  // Decide from the index and the grants first, and only then look at the disk.
   const e = ctx.s.index.get(join(segs));
   if (!e || e.kind !== 'folder' || !(ctx.visible(e) || ctx.traversable(e))) throw notFound();
+  await ctx.s.vault.resolve(segs);
   return e;
 }
 
@@ -253,8 +255,7 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
     const segs = ctx.urlPath(PREFIX);
     if (segs.length === ctx.account.root.length) throw alreadyExists('');
     return s.vault.exclusive(async () => {
-      const real = await s.vault.resolve(segs);
-      const perms = ctx.perms(real);
+      const { real, perms } = await writablePath(ctx, segs);
       if (!perms.has('create')) throw perms.has('read') ? forbidden('create') : notFound();
       if ((await s.vault.kindOf(real)) !== null) throw alreadyExists(ctx.toApi(real));
       await ctx.audited('mkdir', real, {}, () => s.vault.mkdir(real));
@@ -281,8 +282,9 @@ export function folderRoutes(app: FastifyInstance, s: Services) {
       const raw = await readdir(s.vault.abs(real), { recursive: true });
       for (const rel of raw) {
         const e = s.index.get(join([...real, ...split(rel.split('\\').join('/'))].map((x) => x.normalize('NFC'))));
-        if (!e) throw new ApiError(409, 'folder_not_empty', 'The folder contains files this account cannot see');
-        if (!ctx.perms(e.segs).has(perm)) throw forbidden(`${perm} everything`);
+        // A symlink whose target the account can't read is not something it can see either.
+        if (!e || (e.real && !ctx.can(e.real, 'read'))) throw new ApiError(409, 'folder_not_empty', 'The folder contains files this account cannot see');
+        if (!ctx.perms(e.segs).has(perm) || (e.real && !ctx.perms(e.real).has(perm))) throw forbidden(`${perm} everything`);
       }
       await ctx.audited(permanent ? 'purge' : 'delete', real, { recursive: true }, async () =>
         permanent ? s.vault.purge(real) : { trash: await s.vault.trash(real) },

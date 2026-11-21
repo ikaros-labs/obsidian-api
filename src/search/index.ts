@@ -403,7 +403,13 @@ export class SearchIndex {
 }
 
 const SNIPPET_CHARS = 160;
-const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)[\s#]*$/;
+const HEADING = /^\s{0,3}(#{1,6})\s/;
+/** Heading text after the `#`s, without the closing `#`s and spaces (by hand: see headingOf in markdown.ts). */
+function headingText(rest: string): string {
+  let end = rest.length;
+  while (end > 0 && /[\s#]/.test(rest[end - 1]!)) end--;
+  return rest.slice(0, end).trimStart();
+}
 
 /**
  * The line of `body` that best shows why a note matched (most distinct matched terms; text lines
@@ -423,7 +429,7 @@ export function snippetOf(body: string, terms: Set<string>, frontmatter?: Record
     const h = fence === null && !f ? HEADING.exec(raw) : null;
     if (h) {
       while (stack.length > 0 && stack.at(-1)!.level >= h[1]!.length) stack.pop();
-      stack.push({ level: h[1]!.length, text: h[2]! });
+      stack.push({ level: h[1]!.length, text: headingText(raw.slice(h[0].length)) });
     }
     const heading = stack.length > 0 ? stack.map((x) => x.text).join(' > ') : null;
     if (!h) first ??= { text: raw, heading };

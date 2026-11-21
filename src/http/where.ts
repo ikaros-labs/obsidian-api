@@ -11,15 +11,19 @@ export interface Condition {
   value: string;
 }
 
-const COND = /^\s*([^=!<>]+?)\s*(!=|>=|<=|=|>|<)\s*(.*?)\s*$/s;
+// One pass: everything before the first operator character is the key. Trimming happens afterwards, so
+// a long run of spaces can't be split between several quantifiers (and backtrack).
+const COND = /^([^=!<>]*)(!=|>=|<=|=|>|<)(.*)$/s;
 const NUM = /^-?\d+(\.\d+)?$/;
 const DATE = /^\d{4}-\d{2}-\d{2}/;
 
 export function parseWhere(list: string[]): Condition[] {
   return list.map((source) => {
     const m = COND.exec(source);
-    if (!m) throw invalidRequest(`Cannot parse where "${source}": expected Key=Value, Key!=Value, or Key>=, >, <=, < a number or date`);
-    const [, key, op, raw] = m as unknown as [string, string, Condition['op'], string];
+    const key = m?.[1]!.trim() ?? '';
+    if (!m || key === '') throw invalidRequest(`Cannot parse where "${source}": expected Key=Value, Key!=Value, or Key>=, >, <=, < a number or date`);
+    const op = m[2] as Condition['op'];
+    const raw = m[3]!.trim();
     // "Status==" or "Score=>3": a second operator character, not a value.
     if (/^[=!<>]/.test(raw)) throw invalidRequest(`Cannot parse where "${source}": use one operator: =, !=, >=, >, <=, <`);
     const value = raw.replace(/^(["'])(.*)\1$/s, '$2');

@@ -6,6 +6,9 @@ import { revOf, type VaultIndex } from './vault-index.js';
 
 const errno = (e: unknown) => (e as NodeJS.ErrnoException).code;
 
+/** Numbered names `freePath` tries before giving up. */
+const MAX_RENAME_PROBES = 10_000;
+
 /**
  * One lock for every API write. Writes are a few local file operations, so running them one at a
  * time is cheap, and it rules out every interleaving between them: two names for one file (case,
@@ -80,6 +83,9 @@ export class Vault {
         st = await lstat(abs);
       } catch (e) {
         if (errno(e) === 'ENOENT' || errno(e) === 'ENOTDIR') return [...realSegs, ...segs.slice(i)];
+        // A path that can't be looked up is not there, as far as callers can tell: a 500 here would
+        // say that the folders above it exist.
+        if (errno(e) === 'ENAMETOOLONG' || errno(e) === 'EACCES' || errno(e) === 'ELOOP') throw notFound();
         throw e;
       }
       if (st.isSymbolicLink()) {
@@ -284,7 +290,7 @@ export class Vault {
   /** Moves a file or folder into the trash, keeping its relative path. */
   async trash(segs: Segs): Promise<string> {
     if (!this.opts.trash) throw new ApiError(400, 'invalid_request', 'The trash is disabled; delete with permanent=true');
-    const dest = await this.freePath([...this.opts.trash, ...segs], true);
+    const dest = await this.freePath([...this.opts.trash, ...segs]);
     await mkdir(path.dirname(this.abs(dest)), { recursive: true });
     await rename(this.abs(segs), this.abs(dest));
     await this.index.refresh(join(segs));
@@ -312,15 +318,20 @@ export class Vault {
     return readdir(this.abs(segs));
   }
 
-  /** `a/b.md` → the first of `a/b.md`, `a/b 1.md`, `a/b 2.md`, … that doesn't exist. */
-  async freePath(segs: Segs, includeSelf = true): Promise<string[]> {
+  /**
+   * `a/b.md` → the first of `a/b.md`, `a/b 1.md`, `a/b 2.md`, … that doesn't exist. Names `allowed`
+   * rejects count as taken whether they exist or not: the caller passes the account's permission
+   * check, so the name it gets is one it may create and doesn't tell it what else is there.
+   */
+  async freePath(segs: Segs, allowed: (candidate: string[]) => boolean = () => true): Promise<string[]> {
     const last = segs.at(-1)!;
     const dot = last.lastIndexOf('.');
     const [stem, ext] = dot > 0 ? [last.slice(0, dot), last.slice(dot)] : [last, ''];
-    for (let n = includeSelf ? 0 : 1; ; n++) {
+    for (let n = 0; n <= MAX_RENAME_PROBES; n++) {
       const candidate = [...segs.slice(0, -1), n === 0 ? last : `${stem} ${n}${ext}`];
-      if ((await this.kindOf(candidate)) === null) return candidate;
+      if (allowed(candidate) && (await this.kindOf(candidate)) === null) return candidate;
     }
+    throw alreadyExists(join(segs));
   }
 
   /** Re-indexes a new path; the index adds any parent folders created on the way. */

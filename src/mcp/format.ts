@@ -20,9 +20,21 @@ export function toResult(out: ToolOutput, opts: { fence: boolean }): CallToolRes
   return opts.fence ? { content } : { content, structuredContent: out.data };
 }
 
+/**
+ * Error details that never hold text from the vault: paths (plain everywhere), revs, numbers and what
+ * the caller itself sent. Everything else (heading candidates, view names, diagnostics…) can.
+ */
+const PLAIN_DETAILS = ['did_you_mean', 'retry_after', 'current_rev', 'changed', 'path', 'kind', 'use', 'issues'];
+
 export function errorResult(e: ToolError, opts: { fence: boolean }): CallToolResult {
   const error = { code: e.code, message: e.message, ...(e.details ? { details: e.details } : {}) };
-  const content: CallToolResult['content'] = [{ type: 'text', text: `${e.code}: ${e.message}${e.details ? `\n${JSON.stringify(e.details)}` : ''}` }];
+  let details = e.details ? `\n${JSON.stringify(e.details)}` : '';
+  if (opts.fence && e.details) {
+    // An invalid base is described in the file's own words (its keys, its YAML): nothing is plain.
+    const [plain, note] = split(e.details, e.code === 'invalid_base' ? [] : PLAIN_DETAILS);
+    details = `${Object.keys(plain).length > 0 ? `\n${JSON.stringify(plain)}` : ''}${Object.keys(note).length > 0 ? `\n${fence(JSON.stringify(note), {})}` : ''}`;
+  }
+  const content: CallToolResult['content'] = [{ type: 'text', text: `${e.code}: ${e.message}${details}` }];
   return opts.fence ? { isError: true, content } : { isError: true, content, structuredContent: { error } };
 }
 
@@ -49,12 +61,12 @@ export function fence(content: string, attrs: Record<string, string>): string {
 
 type Obj = Record<string, unknown>;
 
-/** Splits `o` into the fields named in `keys` (note text) and the rest (paths, counts, revs, …). */
+/** Splits `o` into the fields named in `keys` and the rest, in that order. */
 function split(o: Obj, keys: readonly string[]): [Obj, Obj] {
-  const plain: Obj = {};
-  const note: Obj = {};
-  for (const [k, v] of Object.entries(o)) (keys.includes(k) ? note : plain)[k] = v;
-  return [plain, note];
+  const named: Obj = {};
+  const rest: Obj = {};
+  for (const [k, v] of Object.entries(o)) (keys.includes(k) ? named : rest)[k] = v;
+  return [named, rest];
 }
 
 /**
@@ -69,7 +81,7 @@ export function fencedText(data: Obj, noteKeys: { top?: readonly string[]; item?
   const out: string[] = [];
   let fenced = false;
   const add = (o: Obj, keys: readonly string[]) => {
-    const [plain, note] = split(o, keys);
+    const [note, plain] = split(o, keys);
     if (Object.keys(plain).length > 0) out.push(JSON.stringify(plain));
     if (Object.keys(note).length === 0) return;
     fenced = true;

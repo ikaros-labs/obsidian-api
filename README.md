@@ -268,7 +268,7 @@ rev: sha256:082f85f1f14f1b25  (changed lines: +1 −0)
 
 ## Configuration
 
-The config file must live **outside** the vault (the server refuses to start otherwise). It reloads when the file changes or on `SIGHUP`. If the new version is invalid, the server keeps the old one and logs why.
+The config file must live **outside** the vault (the server refuses to start otherwise). It reloads when the file changes or on `SIGHUP`. If the new version is invalid, the server keeps the old one and logs why. Changes to `server` and to `vault.path`, `vault.trash` and `vault.follow_symlinks` need a restart: a reload keeps the running values, applies everything else (accounts, tokens, grants) and logs that a restart is needed.
 
 ```yaml
 version: 1

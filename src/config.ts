@@ -6,6 +6,7 @@ import { AccountAccessSchema, compileAccess, parseExclude, tryPath as tryPathInt
 import { ConfigError } from './errors.js';
 import { TOOL_NAMES } from './mcp/names.js';
 import { hasDotSegment, join } from './paths.js';
+import { expiryTime } from './tokens.js';
 
 const RATE_RE = /^(\d+)\/(sec|min|hour)$/;
 const SIZE_RE = /^(\d+)(b|kb|mb)?$/i;
@@ -16,7 +17,11 @@ export const OBSIDIAN_TYPES = ['text', 'multitext', 'number', 'checkbox', 'date'
 export type ObsidianType = (typeof OBSIDIAN_TYPES)[number];
 
 const RateSchema = z.string().regex(RATE_RE, 'expected e.g. "120/min" (unit: sec, min or hour)');
-const DateSchema = z.string().regex(DATE_RE, 'expected a date like 2027-10-01');
+// The pattern alone lets 2027-13-45 through, which no date parser reads.
+const DateSchema = z
+  .string()
+  .regex(DATE_RE, 'expected a date like 2027-10-01')
+  .refine((s) => expiryTime(s) !== null, 'not a valid date');
 
 const TokenSchema = z.strictObject({
   name: z.string().regex(/^[\w.-]+$/, 'letters, digits, ".", "_" and "-" only'),
@@ -330,16 +335,18 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
  * values; everything else (accounts, tokens, grants, …) is applied right away.
  */
 export class ConfigManager {
-  private watcher: FSWatcher | null = null;
+  private watchers: FSWatcher[] = [];
   private timer: NodeJS.Timeout | null = null;
 
   constructor(
     private config: Config,
     private readonly log: { info(msg: string): void; error(msg: string): void } = console,
+    /** The path the operator gave. It is read again at every reload: it may be a symlink that gets re-pointed. */
+    private readonly sourcePath: string = config.configPath,
   ) {}
 
   static load(configPath: string, log?: ConstructorParameters<typeof ConfigManager>[1]): ConfigManager {
-    return new ConfigManager(loadConfig(configPath), log);
+    return new ConfigManager(loadConfig(configPath), log, path.resolve(configPath));
   }
 
   get current(): Config {
@@ -350,7 +357,7 @@ export class ConfigManager {
     let next: Config;
     let pending: string | null = null;
     try {
-      const data = parseYaml(readConfigText(this.config.configPath));
+      const data = parseYaml(readConfigText(this.sourcePath));
       const running = restartOnly(this.config.raw);
       // What the file asks for, on its own: changed (or invalid) restart-only settings wait for a restart.
       try {
@@ -364,30 +371,58 @@ export class ConfigManager {
       const overlaid = isObject(data)
         ? { ...data, server, vault: { ...(isObject(data.vault) ? data.vault : {}), path: vaultPath, trash, follow_symlinks } }
         : data;
-      next = compileConfig(checkSchema(overlaid), this.config.configPath, this.config.vaultPath);
+      next = compileConfig(checkSchema(overlaid), this.sourcePath, this.config.vaultPath);
     } catch (e) {
       this.log.error(`Config reload failed, keeping the previous config. ${(e as Error).message}`);
       return false;
     }
+    const moved = next.configPath !== this.config.configPath;
     this.config = next;
     if (pending) this.log.error(`Config reload: ${pending}; restart-only settings (server, vault path, trash, symlinks) keep their running values until a restart; applied everything else`);
     this.log.info(`Config reloaded (${next.accounts.size} accounts)`);
+    // The new config is live whatever happens to the watch: a revocation must not depend on it.
+    if (moved && this.watchers.length > 0) {
+      try {
+        this.watch();
+      } catch (e) {
+        this.log.error(`Config reloaded, but the file it now resolves to can't be watched (${(e as Error).message}); still watching the old location, reload with SIGHUP after further edits`);
+      }
+    }
     return true;
   }
 
-  /** Watches the config's folder, so editors that replace the file are picked up too. */
+  /**
+   * Watches the folder of the config path as given and, when that is a symlink, the folder of the
+   * file it points to: editors that replace the file and deploys that re-point the link are both
+   * picked up. If a folder can't be watched this throws and the watchers already running stay.
+   */
   watch(): void {
-    const file = path.basename(this.config.configPath);
-    this.watcher = watch(path.dirname(this.config.configPath), (_event, name) => {
-      if (name !== file) return;
+    const schedule = () => {
       if (this.timer) clearTimeout(this.timer);
       this.timer = setTimeout(() => this.reload(), 200);
-    });
+    };
+    const files = new Set([this.sourcePath, this.config.configPath]);
+    const next: FSWatcher[] = [];
+    try {
+      for (const dir of new Set([...files].map((f) => path.dirname(f)))) {
+        next.push(
+          watch(dir, (_event, name) => {
+            // A change to the file itself, or anything in the folder that made the path resolve elsewhere.
+            if ([...files].some((f) => path.dirname(f) === dir && path.basename(f) === name) || realpathLoose(this.sourcePath) !== this.config.configPath) schedule();
+          }),
+        );
+      }
+    } catch (e) {
+      for (const w of next) w.close();
+      throw e;
+    }
+    for (const w of this.watchers) w.close();
+    this.watchers = next;
   }
 
   close(): void {
-    this.watcher?.close();
+    for (const w of this.watchers) w.close();
+    this.watchers = [];
     if (this.timer) clearTimeout(this.timer);
   }
 }
-

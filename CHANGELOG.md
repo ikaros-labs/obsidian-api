@@ -1,6 +1,39 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 — 2026-11-20
+
+**Upgrading**
+
+- **The audit log has two lines per write.** An `intent` line is written before the vault is touched and a `result` line after, with the same `request` id. Tools that read the log should join the two on `request`; an intent with no result means the outcome is unknown.
+- **A `.spall/journal` folder appears in the vault during writes.** It holds the old bytes of a file while it is overwritten in place, and is emptied when the write finishes. It is a dot-folder, so it is never indexed or served. Leave it out of sync tools if they would otherwise pick it up.
+- **`invalid_base` for YAML that doesn't parse: the parser's text moved from `message` to `details.yaml_error`.** The message is now always `The base is not valid YAML`.
+- **Bases: a value over 100,000 characters is a value error.** That includes a note property that large, in any expression that reads it. Other properties of the same note still work.
+
+Security fixes from the 2026-11-20 audit.
+
+- **Fix: requests and stored notes that blocked the server.** One request or note could hold the event loop every account shares for seconds to minutes: a `where` value of spaces, a line of `[`, frontmatter with thousands of keys, a heading followed by a long run of spaces, and Bases filters or formulas such as a backtracking regex. These are parsed in linear time now, and one query's Bases expressions get 1 s and results of at most 100,000 characters or items (400 `invalid_request`, or a value error in `diagnostics`).
+- **Fix: creating and deleting the same folder at once could stop the server** (an unhandled promise rejection in the index).
+- **Fix: hidden folders could be told from missing ones.** `<folder>/<300 characters>` answered 500 when the folder existed. Path segments over 255 bytes are now a 400, and a path an account has no permissions on is not looked up on disk.
+- **Fix: `on_conflict: rename` only picks names the account may create.** It skipped a denied `Name 1` that existed and wrote to it when it did not.
+- **Fix: with `follow_symlinks`, `POST /v1/notes`, `POST /v1/folders` and recursive folder delete check the path as requested and the symlink target**, like every other route.
+- **Fix: a config path that is a symlink is followed again at every reload.** Re-pointing the link at a file without a token used to leave that token valid until a restart.
+- **Fix: a token `expires` that is not a real date (`2027-13-01`) is a config error.** It used to mean "never expires".
+- **Fix: a Bases query held open across a reload no longer keeps the account's old access** in the query cache.
+- **Fix: more of what the MCP tools return is fenced**: frontmatter keys, block ids, a base's view names, filters and column names, Bases diagnostics, and error details. A frontmatter object such as `{type: Error, value: …}` is plain data in Bases.
+- **Fix: `/v1/stats?tz=` no longer keeps a formatter for every spelling of a time zone.**
+
+Follow-ups from the review of those fixes.
+
+- **`on_conflict: rename` answers with what the account may see of the name it got.** A create or move that landed on `Name 1` used the permissions of `Name` to decide between the full note and `{path, rev}`.
+- **Bases: one time budget per query, and sizes are checked before the value is built.** A query gets 1 s for all of its work on the event loop: parsing the base, compiling (once), listing rows, filtering, sorting, paging and building the response (it was 1 s for each of two phases). A value an expression reads or builds may render to at most 100,000 characters, counting list items, link targets and display texts; `repeat`, `replace`, `join`, `+`, `escapeHTML` and `format` work out the size first and refuse before allocating. One expression may build 10 million characters per row, and a query whose sort, group or column values add up to more than 20 million is a 400. **Behaviour change:** a note property larger than 100,000 characters is a value error where an expression reads it.
+- **Fix: a line of `[](` followed by a long run of spaces still took quadratic time** to scan for links.
+- **Fix: frontmatter with `.nan` keys, or keys that differ only in type, was wrongly called a duplicate.** Duplicate keys are found as the YAML library finds them.
+- **`invalid_base` for YAML that doesn't parse: the parser's message moved from `message` to `details.yaml_error`.** The message is now always `The base is not valid YAML`. The MCP tools fence all details of an `invalid_base` error.
+- **Fix: Bases treated frontmatter with top-level `type` and `value` keys as one value** instead of two properties.
+- **Fix: `frontmatter.merge` with a nested `__proto__` key dropped the key** and changed the merged object's prototype. Keys are own properties now, whatever they are called.
+- **Fix: a reload that moved to a config location that can't be watched threw after applying the config** and stopped watching altogether. It now logs the problem and keeps the previous watch.
+
+State-machine fixes.
 
 - **Fix: a recursive folder delete could remove a file written after its permission check.** Writes now run one at a time under a vault-wide lock, so another account's note created inside the folder while the delete ran is no longer purged or trashed by an account that can't see it. The same lock stops two edits of one note through a symlink alias (with `follow_symlinks`) from losing one of them.
 - **Fix: a failed or interrupted overwrite no longer leaves a partial note or file.** Before replacing a file in place (which keeps its creation time), Spall saves the old bytes to a journal in `.spall/journal` in the vault. If the write fails, the old content is put back at once. If that fails too, or the server stops midway, it is put back before the next write or at the next start. A retry with the `If-Match` from before the failure then applies. A new file whose write fails is removed instead of left partial.

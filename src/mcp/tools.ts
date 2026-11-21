@@ -179,7 +179,9 @@ const read = tool({
     }
     if (isBase(a.path) && a.view === 'outline') {
       const { json } = await api(ctx, { method: 'GET', url: `/v1/bases/${encPath(a.path)}` });
-      return { data: { path: json.path, rev: json.rev, default_view: json.default_view, views: json.views, diagnostics: json.diagnostics } };
+      // View names, filters and diagnostics come from the file: note text like any other.
+      const data = { path: json.path, rev: json.rev, default_view: json.default_view, views: json.views, diagnostics: json.diagnostics };
+      return withNotes(ctx, data, { top: ['default_view', 'views', 'diagnostics'] });
     }
     if (a.view === 'backlinks') {
       const fields = 'path,rev,backlinks,links';
@@ -188,7 +190,7 @@ const read = tool({
     }
     if (a.view === 'outline') {
       const { json } = await api(ctx, { method: 'GET', url, headers: { accept: 'application/vnd.vault.outline+json' } });
-      return withNotes(ctx, json, { top: ['headings'] });
+      return withNotes(ctx, json, { top: ['headings', 'blocks', 'frontmatter_keys'] });
     }
     if (a.view === 'frontmatter') {
       const { json } = await api(ctx, { method: 'GET', url: `${url}?fields=path,rev,frontmatter,tags`, headers: { accept: 'application/json' } });
@@ -245,7 +247,8 @@ const queryBase = tool({
       a.base !== undefined
         ? await api(ctx, { method: 'POST', url: `/v1/bases/${encPath(a.base)}/query`, body: { view: a.view, ...common } })
         : await api(ctx, { method: 'POST', url: '/v1/query', body: { from: a.from, formulas: a.formulas, ...common } });
-    return withNotes(ctx, json, { top: ['groups'], item: ['values', 'group'] });
+    // The view and column names come from the .base file, and diagnostics can quote property values.
+    return withNotes(ctx, json, { top: ['groups', 'view', 'columns', 'diagnostics'], item: ['values', 'group'] });
   },
 });
 

@@ -8,6 +8,7 @@ import {
   findHeadings,
   headingOf,
   joinFrontmatter,
+  parseYaml,
   scanLines,
   splitFrontmatter,
   type Line,
@@ -48,6 +49,9 @@ const targetNotFound = (what: string) => new ApiError(422, 'patch_target_not_fou
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
+/** A key's own value: frontmatter keys are data, so `constructor` or `__proto__` never mean what objects inherit. */
+const own = (o: Record<string, unknown>, k: string): unknown => (Object.hasOwn(o, k) ? o[k] : undefined);
+
 /** Lists concatenate (skipping primitives already present), objects merge, anything else is replaced. */
 export function mergeValue(current: unknown, incoming: unknown): unknown {
   if (Array.isArray(current) && Array.isArray(incoming)) {
@@ -55,9 +59,11 @@ export function mergeValue(current: unknown, incoming: unknown): unknown {
     return [...current, ...incoming.filter((x) => !(isPrimitive(x) && current.includes(x)))];
   }
   if (isPlainObject(current) && isPlainObject(incoming)) {
-    const out: Record<string, unknown> = { ...current };
-    for (const [k, v] of Object.entries(incoming)) out[k] = mergeValue(current[k], v);
-    return out;
+    // Own properties only, on both sides, and the result is built from entries: a key such as
+    // `__proto__` or `constructor` is one more key, never the object's prototype or something inherited.
+    const merged = new Map(Object.entries(current));
+    for (const [k, v] of Object.entries(incoming)) merged.set(k, mergeValue(merged.get(k), v));
+    return Object.fromEntries(merged);
   }
   return incoming;
 }
@@ -87,7 +93,7 @@ const lineEnd = (s: string, pos: number) => {
  * not a plain block mapping; the caller then falls back to re-serializing.
  */
 function editRaw(raw: string, key: string, value: unknown | undefined): string | null {
-  const doc = parseDocument(raw);
+  const doc = parseYaml(raw);
   const map = doc.contents;
   if (!isMap(map) || map.flow) return null;
   const eol = raw.includes('\r\n') ? '\r\n' : '\n';
@@ -133,7 +139,7 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 
 /** The frontmatter as plain data, or null when it doesn't parse fully (errors, dangling aliases). */
 function plainData(raw: string): Record<string, unknown> | null {
-  const doc = parseDocument(raw);
+  const doc = parseYaml(raw);
   if (doc.errors.length > 0) return null;
   try {
     const v: unknown = doc.toJS();
@@ -149,7 +155,7 @@ function isExactly(raw: string, before: Record<string, unknown>, changes: Map<st
   const after = plainData(raw);
   if (after === null) return false;
   const keys = new Set([...Object.keys(before), ...Object.keys(after), ...changes.keys()]);
-  return [...keys].every((k) => same(after[k], changes.has(k) ? changes.get(k) : before[k]));
+  return [...keys].every((k) => same(own(after, k), changes.has(k) ? changes.get(k) : own(before, k)));
 }
 
 /** Anchors defined in `node` (or below it) that an alias elsewhere in the document refers to. */
@@ -166,7 +172,7 @@ function referencedAnchors(doc: Document, node: unknown): string[] {
 
 function applyFrontmatterOp(text: string, op: Extract<PatchOp, { op: `frontmatter.${string}` }>): string {
   const { frontmatterRaw, body, fences } = splitFrontmatter(text);
-  const doc = frontmatterRaw === null ? new Document({}) : parseDocument(frontmatterRaw);
+  const doc = frontmatterRaw === null ? new Document({}) : parseYaml(frontmatterRaw);
   if (doc.errors.length > 0) throw invalidRequest('The note has invalid frontmatter YAML; fix it with PUT or replace_text');
   if (doc.contents === null) doc.contents = doc.createNode({});
   if (!isMap(doc.contents)) throw invalidRequest('The note frontmatter is not a key/value mapping');
@@ -178,7 +184,7 @@ function applyFrontmatterOp(text: string, op: Extract<PatchOp, { op: `frontmatte
       ? [[op.key, op.value]]
       : op.op === 'frontmatter.unset'
         ? [[op.key, undefined]]
-        : Object.entries(op.value).map(([k, v]) => [k, mergeValue(before[k], v)]),
+        : Object.entries(op.value).map(([k, v]) => [k, mergeValue(own(before, k), v)]),
   );
   // JSON in, JSON out: compare against what the value looks like after a round trip
   for (const [k, v] of changes) if (v !== undefined) changes.set(k, JSON.parse(JSON.stringify(v)));
@@ -203,7 +209,7 @@ function applyFrontmatterOp(text: string, op: Extract<PatchOp, { op: `frontmatte
     raw = doc.toString(STRINGIFY);
     if (!isExactly(raw, before, changes)) throw invalidRequest('The frontmatter change could not be applied exactly; nothing was written');
   }
-  const after = parseDocument(raw).contents;
+  const after = parseYaml(raw).contents;
   return joinFrontmatter(after === null || (isMap(after) && after.items.length === 0) ? null : raw, body, fences);
 }
 

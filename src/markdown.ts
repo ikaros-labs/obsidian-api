@@ -1,4 +1,4 @@
-import { parseDocument } from 'yaml';
+import { isNode, isScalar, parseDocument, visit, YAMLParseError, type Document } from 'yaml';
 
 export type Frontmatter = Record<string, unknown>;
 
@@ -47,10 +47,39 @@ export function joinFrontmatter(frontmatterRaw: string | null, body: string, fen
   return `${fences?.open ?? '---\n'}${fm}${close}${body}`;
 }
 
+/**
+ * Parses YAML written by an account. The library's own duplicate-key check compares every key of a
+ * map with every other one, which is quadratic; here duplicates are found with one Set per map.
+ * Keys are equal exactly when the library says so: the same node, or two scalars with `===` values
+ * (so `1` and `"1"` differ, and NaN equals nothing). The error is the library's, at the second key.
+ */
+export function parseYaml(text: string): Document.Parsed {
+  const doc = parseDocument(text, { uniqueKeys: false });
+  if (doc.errors.length > 0) return doc;
+  visit(doc, {
+    Map(_, map) {
+      const seen = new Set<unknown>();
+      for (const { key } of map.items) {
+        const id: unknown = isScalar(key) ? key.value : key;
+        // NaN: `===` never matches it, a Set would.
+        if (id !== id) continue;
+        if (seen.has(id)) {
+          const range = isNode(key) ? key.range : null;
+          doc.errors.push(new YAMLParseError(range ? [range[0], range[1]] : [0, 0], 'DUPLICATE_KEY', 'Map keys must be unique'));
+          return visit.BREAK;
+        }
+        seen.add(id);
+      }
+      return undefined;
+    },
+  });
+  return doc;
+}
+
 /** Parses frontmatter YAML. Returns null if it is not valid YAML or not a mapping. */
 export function parseFrontmatter(raw: string | null): Frontmatter | null {
   if (raw === null) return {};
-  const doc = parseDocument(raw);
+  const doc = parseYaml(raw);
   if (doc.errors.length > 0) return null;
   const value: unknown = doc.toJS();
   if (value === null || value === undefined) return {};
@@ -97,14 +126,29 @@ export interface Heading {
   chain: string[];
 }
 
-const HEADING_RE = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/;
+const isBlank = (c: string | undefined) => c === ' ' || c === '\t';
+
+/**
+ * The text of an ATX heading line after its `#`s: surrounding spaces and a closing run of `#`s
+ * (when a space precedes it) removed. Done by hand: a regex with a lazy group before the trailing
+ * blanks rescans a long run of spaces from every position.
+ */
+function headingText(rest: string): string {
+  let end = rest.length;
+  while (end > 0 && isBlank(rest[end - 1])) end--;
+  let hashes = end;
+  while (hashes > 0 && rest[hashes - 1] === '#') hashes--;
+  if (hashes < end && (hashes === 0 || isBlank(rest[hashes - 1]))) end = hashes;
+  return rest.slice(0, end).trim();
+}
+
+const HEADING_RE = /^ {0,3}(#{1,6})(?=[ \t]|$)/;
 
 export function headingOf(line: Line): { level: number; text: string } | null {
   if (line.code) return null;
   const m = HEADING_RE.exec(line.text);
   if (!m) return null;
-  const text = (m[2] ?? '').replace(/(^|[ \t]+)#+$/, '').trim();
-  return { level: m[1]!.length, text };
+  return { level: m[1]!.length, text: headingText(line.text.slice(m[0].length)) };
 }
 
 export function findHeadings(lines: Line[]): Heading[] {
@@ -171,7 +215,68 @@ export interface RawLink {
 }
 
 const WIKI_RE = /!?\[\[([^[\]]+?)\]\]/g;
-const MD_LINK_RE = /!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g;
+
+/**
+ * Targets of the inline markdown links in one line: `[label](target)`, `[label](<target> "title")`.
+ * The label may not contain `]`. Equivalent to matching
+ * `\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)` from left to right, which rescans the rest of
+ * the line from every `[` (and every `](`): quadratic on a line an account fills with them.
+ *
+ * Linear here because nothing is scanned forward during matching. One backward pass records, for
+ * every index, where the run of spaces, the run of target characters and the stretch up to the next
+ * `"` starting there end; trying a `](` is then a fixed number of lookups, and the cursor of the one
+ * forward loop only ever moves right.
+ */
+function mdLinkTargets(text: string): string[] {
+  const out: string[] = [];
+  if (!text.includes('](')) return out;
+  const n = text.length;
+  const spacesEnd = new Uint32Array(n + 1);
+  const targetEnd = new Uint32Array(n + 1);
+  const quoteAt = new Uint32Array(n + 1);
+  spacesEnd[n] = targetEnd[n] = quoteAt[n] = n;
+  for (let i = n - 1; i >= 0; i--) {
+    const c = text[i]!;
+    const space = /\s/.test(c);
+    spacesEnd[i] = space ? spacesEnd[i + 1]! : i;
+    targetEnd[i] = space || c === ')' || c === '>' ? i : targetEnd[i + 1]!;
+    quoteAt[i] = c === '"' ? i : quoteAt[i + 1]!;
+  }
+
+  /** Parses `(target "title")` at `open`; returns the target and the index after `)`, or null. */
+  const tail = (open: number): { href: string; end: number } | null => {
+    let i = spacesEnd[open + 1]!;
+    // `<` opens the target unless nothing follows it, in which case it is the target.
+    if (text[i] === '<' && targetEnd[i + 1]! > i + 1) i++;
+    const end = targetEnd[i]!;
+    if (end === i) return null;
+    const href = text.slice(i, end);
+    i = text[end] === '>' ? end + 1 : end;
+    const afterSpaces = spacesEnd[i]!;
+    if (afterSpaces > i && text[afterSpaces] === '"') {
+      const close = quoteAt[afterSpaces + 1]!;
+      if (close < n) {
+        const j = spacesEnd[close + 1]!;
+        if (text[j] === ')') return { href, end: j + 1 };
+      }
+    }
+    return text[afterSpaces] === ')' ? { href, end: afterSpaces + 1 } : null;
+  };
+
+  let labelOpen = false;
+  for (let i = 0; i < n; i++) {
+    if (text[i] === '[') labelOpen = true;
+    else if (text[i] === ']') {
+      const link = labelOpen && text[i + 1] === '(' ? tail(i + 1) : null;
+      labelOpen = false;
+      if (link) {
+        out.push(link.href);
+        i = link.end - 1;
+      }
+    }
+  }
+  return out;
+}
 
 /**
  * A property value that is a whole wikilink (`"[[X]]"`, `"[[X|alias]]"`), which Obsidian treats as a
@@ -213,8 +318,7 @@ export function extractLinks(lines: Line[], frontmatterTargets: string[] = []): 
     if (line.code) continue;
     const text = stripInlineCode(line.text);
     for (const m of text.matchAll(WIKI_RE)) add(m[1]!.split('|')[0]!.split(/[#^]/)[0]!, 'wiki');
-    for (const m of text.matchAll(MD_LINK_RE)) {
-      const href = m[1]!;
+    for (const href of mdLinkTargets(text)) {
       if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('#')) continue;
       let decoded = href.split('#')[0]!;
       try {

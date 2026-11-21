@@ -85,11 +85,37 @@ export async function checkNotANote(ctx: Ctx, raw: string[], note: string[]): Pr
   });
 }
 
-/** Permissions on a path and, if it goes through a symlink, on its target too. */
-function effectivePerms(ctx: Ctx, segs: string[], real: string[]): Set<Perm> {
-  const a = ctx.perms(segs);
-  const b = ctx.perms(real);
-  return new Set([...a].filter((p) => b.has(p)));
+const both = (a: ReadonlySet<Perm>, b: ReadonlySet<Perm>) => new Set([...a].filter((p) => b.has(p)));
+
+/**
+ * Where a write to `segs` would really land, and what the account may do there: the permissions it
+ * has on the path as requested and, if that goes through a symlink, on the target too. A path the
+ * account has no permissions on is not looked up on disk at all, so nothing about it (that it
+ * exists, that it is a symlink, where it points) can show in the answer.
+ */
+export async function writablePath(ctx: Ctx, segs: string[], child?: string): Promise<{ real: string[]; perms: Set<Perm> }> {
+  // With `child`, `segs` is the folder of a file to be created: the folder is resolved, the
+  // permissions are those on the file in it.
+  const leaf = child === undefined ? [] : [child];
+  const requested = ctx.perms([...segs, ...leaf]);
+  if (requested.size === 0) throw notFound();
+  const real = await ctx.s.vault.resolve(segs);
+  return { real, perms: both(requested, ctx.perms([...real, ...leaf])) };
+}
+
+/**
+ * The name `on_conflict: rename` gives a file that would land on `taken`: the first numbered one that
+ * is free and that the account may create, both in `requestedDir` and where that really is. The
+ * permissions returned are those on the chosen name, which decide what the response may show.
+ */
+export async function freeName(ctx: Ctx, taken: string[], requestedDir: string[]): Promise<{ real: string[]; perms: Set<Perm> }> {
+  const permsOn = (c: string[]) => both(ctx.perms([...requestedDir, c.at(-1)!]), ctx.perms(c));
+  try {
+    const real = await ctx.s.vault.freePath(taken, (c) => permsOn(c).has('create'));
+    return { real, perms: permsOn(real) };
+  } catch (e) {
+    throw e instanceof ApiError && e.code === 'already_exists' ? alreadyExists(ctx.toApi(taken)) : e;
+  }
 }
 
 export function checkIfMatch(ifMatch: string[] | null, current: string | null): void {
@@ -108,8 +134,7 @@ export async function putFile(ctx: Ctx, segs: string[], data: Buffer, reply: Fas
   const ifNoneMatch = parseEtagList(header(ctx.req, 'if-none-match'));
 
   return vault.exclusive(async () => {
-    const real = await vault.resolve(segs);
-    const perms = effectivePerms(ctx, segs, real);
+    const { real, perms } = await writablePath(ctx, segs);
     const existing = await vault.kindOf(real);
     if (existing === 'folder') {
       if (!perms.has('read')) throw notFound();
@@ -182,13 +207,13 @@ export async function moveFile(ctx: Ctx, segs: string[], body: unknown, kind: Ki
 
     const real = await ctx.resolve(segs, 'read', 'update', 'delete');
     if ((await vault.kindOf(real)) !== 'file') throw notFound();
-    let realDest = await vault.resolve(dest);
-    const destPerms = effectivePerms(ctx, dest, realDest);
+    let { real: realDest, perms: destPerms } = await writablePath(ctx, dest);
     if (!destPerms.has('create')) throw destPerms.has('read') ? forbidden('create') : notFound();
     if (join(realDest) === join(real)) throw invalidRequest('Source and destination are the same');
     if ((await vault.kindOf(realDest)) !== null) {
       if (b.on_conflict === 'fail') throw alreadyExists(ctx.toApi(realDest));
-      realDest = await vault.freePath(realDest);
+      // Only names the account may create, on the path as requested and where it really lands.
+      ({ real: realDest, perms: destPerms } = await freeName(ctx, realDest, dest.slice(0, -1)));
     }
     const rev = revOf(await vault.read(real));
     try {

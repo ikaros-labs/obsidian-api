@@ -7,7 +7,7 @@ import { PatchBodySchema, applyPatch } from '../patch.js';
 import { join, parsePlainPath, sanitizeTitle, withMdExtension } from '../paths.js';
 import { revOf } from '../vault-index.js';
 import { Ctx, etag, header, negotiate, parse, parseEtagList, project, type Services } from './context.js';
-import { checkIfMatch, checkNotANote, DeleteQuery, deleteFile, MoveBody, moveFile, noteJson, putFile, stripMove } from './fileops.js';
+import { checkIfMatch, checkNotANote, DeleteQuery, deleteFile, freeName, MoveBody, moveFile, noteJson, putFile, stripMove, writablePath } from './fileops.js';
 import { doc, jsonSchema } from './openapi.js';
 
 const PREFIX = '/v1/notes/';
@@ -91,9 +91,12 @@ export function noteRoutes(app: FastifyInstance, s: Services) {
     const ctx = new Ctx(req, s);
     const b = parse(CreateBody, req.body);
     return s.vault.exclusive(async () => {
-      const folder = await s.vault.resolve(ctx.toVault(parsePlainPath(b.folder)));
       const name = `${sanitizeTitle(b.title)}.md`;
-      const perms = ctx.perms([...folder, name]);
+      const requested = ctx.toVault(parsePlainPath(b.folder));
+      // The folder as requested and the folder it resolves to must both allow the new note.
+      const created = await writablePath(ctx, requested, name);
+      const folder = created.real;
+      let perms = created.perms;
       if (!perms.has('create')) throw perms.has('read') ? forbidden('create') : notFound();
       if ((await s.vault.kindOf(folder)) === 'file') throw new ApiError(400, 'invalid_path', 'folder is a file');
 
@@ -110,7 +113,8 @@ export function noteRoutes(app: FastifyInstance, s: Services) {
             if (!(e instanceof ApiError && e.code === 'already_exists') || b.on_conflict === 'fail' || attempt > 50) {
               throw e instanceof ApiError && e.code === 'already_exists' ? alreadyExists(ctx.toApi(target)) : e;
             }
-            target = await s.vault.freePath(target);
+            // The name chosen decides what the response may show, not the name asked for.
+            ({ real: target, perms } = await freeName(ctx, target, requested));
           }
         }
       });
