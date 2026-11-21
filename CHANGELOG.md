@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 — 2026-11-20
+
+**Upgrading**
+
+- **The audit log has two lines per write.** An `intent` line is written before the vault is touched and a `result` line after, with the same `request` id. Tools that read the log should join the two on `request`; an intent with no result means the outcome is unknown.
+- **A `.spall/journal` folder appears in the vault during writes.** It holds the old bytes of a file while it is overwritten in place, and is emptied when the write finishes. It is a dot-folder, so it is never indexed or served. Leave it out of sync tools if they would otherwise pick it up.
+- **`invalid_base` for YAML that doesn't parse: the parser's text moved from `message` to `details.yaml_error`.** The message is now always `The base is not valid YAML`.
+- **Bases: a value over 100,000 characters is a value error.** That includes a note property that large, in any expression that reads it. Other properties of the same note still work.
 
 Security fixes from the 2026-11-20 audit.
 
